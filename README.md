@@ -93,6 +93,9 @@ Use-case đầu tiên: trợ lý DevOps cá nhân chạy local — quản lý pr
 | [`docs/harness-architecture-design.md`](docs/harness-architecture-design.md) | Sơ đồ kiến trúc (component + sequence) + mô tả từng thành phần + bố trí dữ liệu |
 | [`docs/harness-execution-plan.md`](docs/harness-execution-plan.md) | Kế hoạch thực thi chi tiết: work package/task + dependency + DoD + hệ thống red gate RG-0→RG-4 + ma trận phủ A→Z |
 | [`docs/harness-local-use-case.md`](docs/harness-local-use-case.md) | Use-case đầu tiên (trợ lý DevOps cá nhân): 5 kịch bản, tool remote-ops/DB, hardline rules |
+| [`docs/harness-detailed-spec-p0-p1.md`](docs/harness-detailed-spec-p0-p1.md) | Spec implementation-ready P0+P1: layout package, interface Python, schema SQLite, config, pseudocode, test đánh số |
+| [`docs/harness-detailed-spec-p2.md`](docs/harness-detailed-spec-p2.md) | Spec chi tiết P2: SSH/VPN/DB tools, SQL classifier, skills, hooks, cron, RPC, eval suite |
+| [`docs/harness-detailed-spec-p3.md`](docs/harness-detailed-spec-p3.md) | Spec chi tiết P3: policy engine, compliance, channels, subagent, packaging |
 
 ## Quyết định đã chốt
 
