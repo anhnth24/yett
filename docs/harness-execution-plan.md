@@ -111,7 +111,7 @@ flowchart TB
 - P1.6.1 Span model (5 types) + context propagation (correlation ID) — DoD: unit test span tree cha-con đúng
 - P1.6.2 Buffer → flush batch vào `traces.db` — DoD: crash giữa chừng mất ≤ buffer, không hỏng db
 - P1.6.3 CLI `traces list/get/follow` — DoD: đọc được trace của test run
-- P1.6.4 Cost accounting từ span llm_call (bảng giá trong config) — DoD: test không đếm đôi token
+- P1.6.4 Cost ledger: cost accounting từ span llm_call (bảng giá `config/pricing.yaml`) + CLI `harness usage --by provider/model/day` — DoD: test không đếm đôi token; usage query khớp tổng span; thiết kế span cost mở sẵn cho provider phi-LLM (image/search ở P2.8/P3.6)
 
 **WP1.4 — Security fail-closed** (spec P0.1.5) — tuần 1–2
 - P1.4.1 Policy Gate interface (`evaluate(tool, args, ctx) -> Allow|Deny(reason)|NeedApproval`) — interface này giữ nguyên đến v0.3
@@ -211,7 +211,7 @@ flowchart TB
 - P2.7.5 Audit mọi query kể cả bị deny — DoD: đối chiếu audit với test run
 
 **WP2.8 — Tool & skill trợ lý** (spec: `harness-local-use-case.md` S6–S7) — tuần 8
-- P2.8.1 Tool `web_search` (API key trong secret store; kết quả fetch qua egress whitelist) — DoD: key không vào context/span; domain ngoài whitelist bị chặn
+- P2.8.1 Tool `web_search` (API key trong secret store; kết quả fetch qua egress whitelist) — DoD: key không vào context/span; domain ngoài whitelist bị chặn; mỗi query ghi cost span vào ledger (P1.6.4)
 - P2.8.2 Skill bundled `research` (search → fetch → tổng hợp có trích dẫn vào workspace) + `report` (S1) + `content-writer` (S7) — DoD: mỗi skill demo được end-to-end
 
 ### 🔴 RG-2 — Gate "agent dùng được thật"
@@ -250,7 +250,7 @@ flowchart TB
 - P3.3.2 Zalo Bot API adapter — DoD: nt (đã verify cấu trúc giống Telegram)
 
 **WP3.4 — Analytics + Packaging** — tuần 5–7
-- P3.4.1 `/usage`, `/insights` đọc từ span store — DoD: khớp số RG2-6
+- P3.4.1 `/usage`, `/insights` đọc từ span store (tổng chi theo provider/model/ngày/session, phủ cả image/search) + budget cảnh báo ngưỡng tháng qua heartbeat — DoD: khớp số RG2-6; demo chạm ngưỡng giả lập → nhận cảnh báo
 - P3.4.2 Packaging deploy-per-tenant: compose stack, config template, backup/restore 3 db + workspace — DoD: cài sạch trên máy trắng theo doc trong ≤1 giờ bởi người không thuộc team
 - P3.4.3 Runbook vận hành + upgrade path — DoD: upgrade thử v0.2→v0.3 giữ nguyên dữ liệu
 
@@ -259,7 +259,7 @@ flowchart TB
 - P3.6.2 Tool `delegate`: chạy core loop trong session con, toolset thu hẹp, budget riêng; **chặn delegate lồng nhau ở registry** — DoD: subagent gọi delegate bị deny (test)
 - P3.6.3 **Không leo thang quyền:** cùng Policy Gate + policy; hardline (AG-6/AG-7) áp nguyên vẹn trong subagent — DoD: suite AG chạy lại trong ngữ cảnh subagent, xanh
 - P3.6.4 Span subagent lồng dưới span cha; `traces get` xem được cả cây — DoD: trace demo
-- P3.6.5 Tool `image_gen` (provider API / backend local **[Inference — đánh giá khi implement]**) + subagent bundled `researcher`/`writer`/`illustrator` — DoD: S8 demo; key không vào context
+- P3.6.5 Tool `image_gen` (provider API / backend local **[Inference — đánh giá khi implement]**) + subagent bundled `researcher`/`writer`/`illustrator` — DoD: S8 demo; key không vào context; mỗi ảnh ghi cost span vào ledger
 
 **WP3.5 — Hardening trước release** — tuần 6–8
 - P3.5.1 Pentest nội bộ full (theo threat model P0.4.1, cập nhật) — DoD: finding severity cao = 0, trung bình có kế hoạch
@@ -344,6 +344,7 @@ Sản phẩm chưa "hoàn thành" khi mới pass release gate — hoàn thành =
 | Hooks mutate/deny + cách ly lỗi | WP2.2 | RG2-3 |
 | Cron + heartbeat (chống overlap, liveness) | WP2.4 | RG2-1 |
 | Tracing first-class + CLI | WP1.6 | RG1-5 |
+| Cost ledger mọi provider (LLM + image + search) + `harness usage` + budget alert | P1.6.4, P2.8.1, P3.6.5, P3.4.1 | RG1-5 (cost khớp usage), RG2-6 |
 | Analytics on-prem (/usage, /insights) | P3.4.1 | RG3 (đối chiếu RG2-6) |
 | Compliance layer (audit, phân loại, retention) | WP3.2 | RG3-4, RG3-7, RG4-5 |
 | CLI/TUI | WP1.7 | RG1 (demo end-to-end) |

@@ -65,6 +65,7 @@ Use-case đầu tiên: trợ lý DevOps cá nhân chạy local — quản lý pr
 
 ### Observability & Compliance
 - **[v0.1] Tracing first-class** — mọi model/tool/hook call có span + correlation ID (5 loại span), lưu SQLite local, replay được một turn; CLI `traces list/get/follow/export`. Có từ commit đầu, không bolt-on.
+- **[v0.1] Cost ledger** — mọi request đến provider có phí (LLM, và từ v0.2/v0.3 cả web_search, image_gen) ghi lại provider/model/đơn vị dùng/cost tính từ bảng giá config; xem tổng chi bằng `harness usage --by provider/model/day`; cảnh báo khi chạm ngưỡng budget tháng. Cost là ước tính từ bảng giá — đối soát định kỳ với billing của provider.
 - **[v0.3] Analytics on-prem** — usage/cost/success-rate per session đọc từ chính span store (kiểu `/usage`, `/insights`), không thu thập thêm dữ liệu.
 - **[v0.3] Compliance layer VN/gov** — audit log append-only cho mọi quyết định Gate/approval/ghi memory, phân loại dữ liệu, retention policy theo yêu cầu khách. *(tự thiết kế 100% — không có nguồn tham chiếu)*
 
