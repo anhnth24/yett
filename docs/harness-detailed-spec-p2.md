@@ -2,14 +2,14 @@
 
 > **Trạng thái:** Draft để review · 04/07/2026
 > **Phạm vi:** hạ Phase 2 xuống mức code — remote ops (SSH/VPN/log), DB query an toàn + SQL classifier, skills engine, hooks, cross-session memory, scheduler, RPC code execution, eval suite. Tiếp nối `harness-detailed-spec-p0-p1.md` (dùng lại interface/layout ở đó).
-> **Quy ước:** package `hx` (placeholder), **[Inference]** = chốt khi implement. Interface là contract.
+> **Quy ước:** package `yett` (placeholder), **[Inference]** = chốt khi implement. Interface là contract.
 
 ---
 
 ## 1. Bổ sung layout (thêm vào cây P0-P1)
 
 ```
-src/hx/
+src/yett/
 ├── tools/
 │   ├── remote/
 │   │   ├── ssh_exec.py       # WP2.6 tool ssh_exec
@@ -43,7 +43,7 @@ src/hx/
 │   └── unattended.py         # WP2.4 approval timeout cho scheduled run
 ├── rpc/
 │   ├── code_exec.py          # WP2.5 tool execute_code (viết lại từ design)
-│   ├── stubgen.py            # WP2.5 sinh hx_tools.py stub từ registry
+│   ├── stubgen.py            # WP2.5 sinh yett_tools.py stub từ registry
 │   └── broker.py             # WP2.5 socket broker, caps, secret strip
 └── eval/
     ├── runner.py             # WP2.9 chạy golden tasks
@@ -231,11 +231,11 @@ class CronJob(BaseModel):
 ## 8. RPC code execution (WP2.5) — viết lại từ design Hermes
 ```python
 # code_exec.py: tool execute_code(script)
-#   1. stubgen sinh hx_tools.py từ registry.schemas() (chỉ tool subagent/session được phép)
+#   1. stubgen sinh yett_tools.py từ registry.schemas() (chỉ tool subagent/session được phép)
 #   2. chạy script trong CONTAINER (không phải host) — khác Hermes ở đây
 #   3. broker: Unix socket trong container ↔ registry ngoài; MỖI call qua Policy Gate
 #   4. caps: timeout, stdout ≤ N KB, ≤ M tool calls; no recursive execute_code
-#   5. child env: STRIP secret (chỉ HX_RPC_SOCKET); PYTHONPATH sạch (fix #41/#7071)
+#   5. child env: STRIP secret (chỉ YETT_RPC_SOCKET); PYTHONPATH sạch (fix #41/#7071)
 ```
 **Test (AG-5, từ Hermes #41/#7071):** PYTHONPATH injection không lộ nội bộ; env không chứa secret; tool bị Gate deny qua RPC cũng deny; escape container thất bại; vượt caps → cắt sạch.
 

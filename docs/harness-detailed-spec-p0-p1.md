@@ -3,7 +3,7 @@
 > **Trạng thái:** Draft để review · 04/07/2026
 > **Phạm vi:** hạ execution plan xuống mức code được — layout package, interface Python, schema SQLite, config mẫu, pseudocode, và test đánh số map thẳng vào tiêu chí gate. **Chỉ Phase 0 + Phase 1** (phần code trước). Phase 2+ có spec tương tự khi tới lượt (quy tắc: spec chi tiết viết ngay trước khi implement, không viết trước cả năm).
 > **Đầu vào:** `harness-execution-plan.md` (task ID, DoD, gate) + `harness-architecture-design.md` (thành phần, bất biến).
-> **Quy ước:** tên placeholder `hx` cho package/CLI (thay khi chốt tên ở P0.5.2). Ký hiệu **[Inference]** = lựa chọn kỹ thuật đề xuất, chốt khi implement. Interface là contract — chữ ký giữ ổn định; thân hàm minh họa.
+> **Quy ước:** tên placeholder `yett` cho package/CLI (thay khi chốt tên ở P0.5.2). Ký hiệu **[Inference]** = lựa chọn kỹ thuật đề xuất, chốt khi implement. Interface là contract — chữ ký giữ ổn định; thân hàm minh họa.
 
 ---
 
@@ -22,8 +22,8 @@
 
 ```
 <repo>/
-├── pyproject.toml            # pin exact deps; entry point hx = hx.cli:main
-├── src/hx/
+├── pyproject.toml            # pin exact deps; entry point yett = yett.cli:main
+├── src/yett/
 │   ├── __init__.py
 │   ├── cli.py                # [P1] entrypoint: chat, traces, usage, memory, project
 │   ├── config/
@@ -83,9 +83,9 @@
 ```
 
 **Import-linter contracts (AG-3 + bất biến kiến trúc):**
-- `hx.core` KHÔNG được import `hx.sandbox.*` trực tiếp (phải qua `tools.wiring`).
-- Mọi thứ ngoài `hx.sandbox` và `hx.memory.store` KHÔNG được import `vendor.*` trừ qua adapter khai báo trong manifest.
-- `hx.core`/`hx.tools` KHÔNG import `hx.provider.anthropic`/`openai_compat` trực tiếp (chỉ qua `provider.base` + factory).
+- `yett.core` KHÔNG được import `yett.sandbox.*` trực tiếp (phải qua `tools.wiring`).
+- Mọi thứ ngoài `yett.sandbox` và `yett.memory.store` KHÔNG được import `vendor.*` trừ qua adapter khai báo trong manifest.
+- `yett.core`/`yett.tools` KHÔNG import `yett.provider.anthropic`/`openai_compat` trực tiếp (chỉ qua `provider.base` + factory).
 
 ---
 
@@ -372,7 +372,7 @@ CREATE TABLE checkpoints (
 | T-RG1-9 | Scan artifact demo (context dump + spans + logs + checkpoint) → 0 lần xuất hiện giá trị secret test | RG1-9 |
 | T-RG1-10a | Cancel khi đang chờ approval → dừng sạch, không chạy tool | RG1-10 |
 | T-RG1-10b | Cancel khi container đang chạy → container bị kill, checkpoint=canceled | RG1-10 |
-| T-arch-1 | import-linter: `hx.core` không import `hx.sandbox.*` | wiring |
+| T-arch-1 | import-linter: `yett.core` không import `yett.sandbox.*` | wiring |
 | T-arch-2 | path-traversal: read/write ngoài workspace+project root → deny | RG1 (P1.3.6) |
 
 ---
@@ -395,11 +395,11 @@ Mỗi bước: code + test đánh số + demo 15' (DoD = demo được, không p
 
 ## 8. Việc tôi làm được ngay trong repo này (không cần chờ)
 
-- **P0.3.1** skeleton: tạo `pyproject.toml`, cây `src/hx/` với các module + Protocol rỗng (chữ ký ở §3) + docstring, `.import-linter`, CI stub.
+- **P0.3.1** skeleton: tạo `pyproject.toml`, cây `src/yett/` với các module + Protocol rỗng (chữ ký ở §3) + docstring, `.import-linter`, CI stub.
 - **P0.2.1/P0.2.2** vendor intake: cấu trúc `vendor/` + `MANIFEST.md` template (điền SHA khi có mạng tới GitHub) + LICENSE.
 - Test skeleton: `tests/` với conftest + 1 test arch chạy được (import-linter).
 
-Cần bạn trước khi đặt tên thật: **P0.5.2 chốt tên sản phẩm** (giờ dùng `hx`). Còn lại tôi bootstrap được ngay khi bạn ra lệnh.
+Cần bạn trước khi đặt tên thật: **P0.5.2 chốt tên sản phẩm** (giờ dùng `yett`). Còn lại tôi bootstrap được ngay khi bạn ra lệnh.
 
 ---
 

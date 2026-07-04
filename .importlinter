@@ -1,0 +1,25 @@
+# Import-linter contracts (spec P0-P1 §1) — bảo vệ bất biến kiến trúc (AG-3).
+# Chạy: lint-imports
+
+[importlinter]
+root_package = yett
+
+[importlinter:contract:core-not-sandbox]
+# Bất biến: core loop KHÔNG gọi thẳng sandbox — phải qua tools.wiring.
+name = core khong import sandbox truc tiep
+type = forbidden
+source_modules =
+    yett.core
+forbidden_modules =
+    yett.sandbox
+
+[importlinter:contract:core-not-provider-impl]
+# core/tools chỉ biết provider.base, không biết adapter cụ thể (qua factory).
+name = core/tools khong import provider adapter cu the
+type = forbidden
+source_modules =
+    yett.core
+    yett.tools
+forbidden_modules =
+    yett.provider.anthropic
+    yett.provider.openai_compat

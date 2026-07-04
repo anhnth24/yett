@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "yett"
+version = "0.0.1"
+description = "Agent harness cho môi trường on-prem — fail-closed, dữ liệu tại chỗ, deploy-per-tenant"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "yett contributors" }]
+
+# Deps được PIN EXACT khi implement từng WP (chính sách supply-chain — xem harness-master-plan.md).
+# Skeleton chưa cần runtime deps; thêm dần theo phase.
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "pytest==8.3.4",
+  "mypy==1.14.1",
+  "ruff==0.9.2",
+  "import-linter==2.1",
+]
+
+[project.scripts]
+yett = "yett.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/yett"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src/yett"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -2,13 +2,13 @@
 
 > **Trạng thái:** Draft để review · 04/07/2026
 > **Phạm vi:** hạ Phase 3 xuống mức code — policy engine (policy-as-config), immutable core, compliance layer, channels (Telegram → Zalo Bot), subagent delegation 1 cấp, image_gen, analytics, packaging deploy-per-tenant. Tiếp nối spec P0-P1 và P2.
-> **Quy ước:** package `hx` (placeholder), **[Inference]** = chốt khi implement.
+> **Quy ước:** package `yett` (placeholder), **[Inference]** = chốt khi implement.
 
 ---
 
 ## 1. Bổ sung layout
 ```
-src/hx/
+src/yett/
 ├── policy/
 │   ├── engine.py            # WP3.1 đọc policy YAML → Decision (thay deny-list hard-coded)
 │   ├── schema.py            # WP3.1 pydantic cho rule
