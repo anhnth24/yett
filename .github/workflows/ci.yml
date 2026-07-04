@@ -22,6 +22,6 @@ jobs:
       - name: Mypy (strict)
         run: mypy src/yett
       - name: Import-linter (bất biến kiến trúc — AG-3)
-        run: lint-imports
+        run: PYTHONPATH=src lint-imports
       - name: Pytest
         run: pytest -q
