@@ -11,9 +11,12 @@ requires-python = ">=3.11"
 license = { text = "Proprietary" }
 authors = [{ name = "yett contributors" }]
 
-# Deps được PIN EXACT khi implement từng WP (chính sách supply-chain — xem harness-master-plan.md).
-# Skeleton chưa cần runtime deps; thêm dần theo phase.
-dependencies = []
+# Deps PIN EXACT (chính sách supply-chain — xem harness-master-plan.md).
+dependencies = [
+  "pydantic==2.13.4",
+  "pyyaml==6.0.2",
+  "sqlglot==30.12.0",
+]
 
 [project.optional-dependencies]
 dev = [
