@@ -74,7 +74,7 @@ flowchart LR
 | P0.3.1 | Skeleton Python: layout package theo kiến trúc §3, pyproject.toml pin exact deps, pre-commit | — | `pip install -e .` + import mọi package OK |
 | P0.3.2 | CI: lint + test + build container + AG-3 | P0.3.1 | CI xanh; PR thử có import lậu từ vendor bị chặn |
 | P0.4.1 | Threat model v0 (checklist từ OpenClaw THREAT-MODEL-ATLAS + exposure-runbook, áp lên posture của ta) | — | Tài liệu 1–2 trang, được review, liệt kê threat → control tương ứng trong kiến trúc |
-| P0.5.1 | **Chốt platform:** Linux-first; Windows hỗ trợ qua WSL2; macOS best-effort **[Inference — default đề xuất]**. Verify tổ hợp trên máy người dùng thật: Docker (Desktop/WSL2) + VPN client (FortiClient/openfortivpn) + SSH routing khi VPN bật | — | Checklist môi trường chạy pass trên máy người dùng; ghi thành `docs/platform-support.md` |
+| P0.5.1 | **Platform ĐÃ XÁC NHẬN (07/2026): Windows + WSL2 + Docker Desktop**, project nằm trên các ổ đĩa Windows do người dùng khai báo. Việc còn lại: verify trên máy thật (a) VPN client (FortiClient trên Windows host vs openfortivpn trong WSL — routing SSH khi VPN bật đi qua đường nào **[Inference — bẫy chính của tổ hợp này]**), (b) hiệu năng file I/O khi project mount qua `/mnt/<ổ đĩa>` (git/exec chậm trên NTFS mount **[Inference — cân nhắc khuyến nghị clone vào ext4 của WSL]**), (c) Docker Desktop file-sharing cho các ổ khai báo | — | Checklist môi trường chạy pass trên máy người dùng; ghi thành `docs/platform-support.md` kèm khuyến nghị bố trí project |
 | P0.5.2 | Chốt tên sản phẩm (đang là placeholder "harness") — ảnh hưởng tên package Python, CLI, config dir | trước P0.3.1 | Quyết định ghi vào README |
 
 ### 🔴 RG-0 — Legal & Foundation Gate
