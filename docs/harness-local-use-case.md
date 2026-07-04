@@ -15,6 +15,9 @@
 | S3 | **Deploy UAT** | "deploy project X lên UAT" — agent bật VPN (FortiClient/OpenVPN) nếu cần → SSH vào server → chạy deploy script. **Luôn qua approval** |
 | S4 | **Điều tra lỗi trên server → đề xuất fix** | "UAT đang lỗi 500, xem log rồi đề xuất fix" — agent SSH đọc log (read-only), phân tích, đề xuất patch; việc *sửa* là S2 + *deploy lại* là S3 |
 | S5 | **Query DB kiểm tra dữ liệu** | "kiểm tra đơn hàng #123 trong DB UAT sao trạng thái sai" — agent lấy connection string từ config (hoặc người dùng cài qua lệnh), chạy SELECT, đối chiếu. **Tuyệt đối không ALTER/DELETE/UPDATE nếu không được phép tường minh** |
+| S6 | **Tìm kiếm & research thông tin** | "research các cách làm X mới nhất, tổng hợp có nguồn" — agent (hoặc subagent) tìm kiếm web, đọc nguồn, tổng hợp báo cáo có trích dẫn vào workspace |
+| S7 | **Viết content** | "viết bài blog/post/tài liệu từ notes này" — chủ yếu là skill + workspace, không cần tool mới |
+| S8 | **Tạo ảnh** | "tạo ảnh minh họa cho bài viết" — tool gọi API sinh ảnh (provider do người dùng cấu hình) hoặc backend local **[Inference — ComfyUI/SD local là lựa chọn không-egress, đánh giá khi implement]** |
 
 ## 2. Tool mới cần thêm
 
@@ -26,8 +29,27 @@
 | `db_config` | S5 | Cài đặt/liệt kê connection profile (connection string lưu vào secret store, model chỉ thấy tên profile) | v0.2 |
 | `log_read` | S4 | Đường tắt an toàn của ssh_exec: tail/grep các đường dẫn log khai báo trước theo host profile | v0.2 |
 | `report` (skill, không phải tool) | S1 | Skill tổng hợp báo cáo từ workspace các project + git log; chạy tay hoặc qua cron | v0.2 |
+| `web_search` | S6 | Tìm kiếm web qua API do người dùng cấu hình (key trong secret store); domain kết quả fetch vẫn qua egress whitelist — với bản local, whitelist do người dùng tự nới trong config | v0.2 |
+| `delegate` (subagent) | S6, S7 | Ủy quyền task cho subagent — xem §4b | v0.3 |
+| `image_gen` | S8 | Sinh ảnh qua provider API (key trong secret store) hoặc backend local không-egress **[Inference — đánh giá ComfyUI/SD khi implement]**; ảnh lưu vào workspace | v0.3 |
 
-S1, S2 không cần tool mới — chạy trên nền workspace files + skills + scheduler + sandbox đã có trong plan.
+S1, S2, S7 không cần tool mới — chạy trên nền workspace files + skills + scheduler + sandbox đã có trong plan (S7 = skill viết content + template trong workspace).
+
+## 2b. Chế độ trợ lý: subagents (ủy quyền 1 cấp)
+
+Yêu cầu "build các subagent (tìm kiếm, research, viết content, tạo ảnh…)" mở lại **một phần** mục Defer "multi-agent orchestration" của master plan — người dùng local chính là khách số 0 yêu cầu. Phạm vi mở: **delegation 1 cấp**, không phải multi-agent teams.
+
+**Thiết kế (nguyên tắc, chi tiết ở design doc WP3.6):**
+- Subagent = **chính core loop đó** chạy trong session con, với: (a) system prompt riêng theo định nghĩa subagent, (b) **toolset bị thu hẹp** — tập con của toolset cha, khai báo trong định nghĩa, (c) token/vòng lặp budget riêng.
+- Định nghĩa subagent là file trong workspace (`workspace/agents/<tên>.md`: mô tả + toolset + budget) — cùng triết lý file-based, git-diff được, và đi qua review gate như skill nếu do agent tự tạo.
+- **Không leo thang quyền:** Policy Gate của subagent là CÙNG một Gate với cùng policy — subagent không bao giờ được phép thứ mà cha không được; hardline (xóa-file-remote, DB) áp nguyên vẹn. Deny ở cha = deny ở con.
+- **Không lồng nhau (1 cấp):** subagent không được gọi `delegate` — chặn ở registry. Multi-agent teams/độ sâu >1 vẫn nằm ở Defer.
+- Tracing: span `agent` của subagent lồng dưới span cha (mô hình 5 span types đã hỗ trợ sẵn parent-child) — một `traces get` xem được cả cây.
+- Kết quả subagent trả về cha dạng text/artifact; artifact ghi vào workspace.
+
+**Subagent mẫu đi kèm (bundled):** `researcher` (web_search + web_fetch + read/write workspace — cho S6), `writer` (read/write workspace — cho S7), `illustrator` (image_gen — cho S8). Người dùng tự định nghĩa thêm bằng file.
+
+**Ghi chú posture:** bản local nới egress whitelist (search API, image API) là **quyết định config của người dùng trên máy của họ**; bản deploy gov giữ nguyên whitelist chặt — kiến trúc không đổi, chỉ khác config. Backend sinh ảnh local (không-egress) là lựa chọn cho môi trường chặt.
 
 ## 3. Mô hình an toàn cho remote ops (SSH/VPN)
 
@@ -90,6 +112,9 @@ Yêu cầu này map thẳng vào Policy Gate, thực thi **phòng thủ 4 lớp,
 | RG-2 dogfood định nghĩa lại = chính 5 kịch bản S1–S5 chạy thật trên project/server/DB của người dùng | RG2-1 |
 | Thêm RG2-8 (bộ test né tránh SQL classifier xanh) và AG-6 (DB hardline suite thường trực) | RG-2, §1 execution plan |
 | Thêm RG2-9 (bộ test né tránh hardline xóa-file-remote xanh) và AG-7 (remote-deletion hardline suite thường trực) | RG-2, §1 execution plan |
+| Thêm P2.8.1 (`web_search`) + skill research/content vào Phase 2; RG-2 dogfood mở rộng S6–S7 | WP2.8, RG2-1 |
+| Thêm WP3.6 (subagent delegation 1 cấp + `image_gen`) vào Phase 3; tiêu chí RG3-9 (subagent không leo thang quyền) | Phase 3, RG-3 |
+| Mục Defer "multi-agent orchestration" trong master plan/README thu hẹp: delegation 1 cấp vào v0.3, teams/lồng sâu vẫn defer | `harness-master-plan.md` §4, README |
 | Kiến trúc: sandbox vendor giữ thêm `ssh.py`; Tool Runtime thêm nhóm remote-ops/db | `harness-architecture-design.md` §3.6–3.7 |
 
 **Điều KHÔNG đổi:** kiến trúc, thứ tự phase, các gate khác. Use-case local chạy trên đúng core đã thiết kế — khác biệt duy nhất là bộ tool + config + skill, đúng như kỳ vọng của thiết kế (mọi năng lực mới = tool qua Gate, không đục core).

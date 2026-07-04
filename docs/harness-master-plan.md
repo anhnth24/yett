@@ -123,7 +123,7 @@ Cột "Vì sao nguồn này" là lý do chọn nguồn, đã kiểm chứng tron
 | Hạng mục | Mở lại khi |
 |---|---|
 | Semantic memory / KG (pattern GoClaw 3-tier) | FTS5 đo được là không đủ trên use-case thật (định nghĩa metric relevance trước) |
-| Multi-agent orchestration/teams | Có yêu cầu khách trả tiền cụ thể |
+| Multi-agent orchestration/teams | **Thu hẹp 07/2026:** delegation 1 cấp (subagent researcher/writer/illustrator, không lồng nhau, không leo thang quyền) vào v0.3 theo yêu cầu use-case local (`harness-local-use-case.md` §2b); teams/độ sâu >1 vẫn defer đến khi có yêu cầu khách cụ thể |
 | Self-evolution (agent tự sửa config) | Chỉ sau khi immutable-core guardrail (3.1) chạy ổn định ≥1 quý **[Inference]** |
 | Singularity backend | Gặp khách cấm Docker daemon (abstraction #1 đã chừa sẵn chỗ) |
 | Trajectory datagen | Có kế hoạch fine-tune thật |

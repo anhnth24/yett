@@ -53,6 +53,12 @@ Use-case đầu tiên: trợ lý DevOps cá nhân chạy local — quản lý pr
 - **[v0.2] Query DB an toàn** — connection profile trong secret store (model chỉ thấy tên profile); phòng thủ 4 lớp: DB user read-only → session read-only → SQL classifier trong Policy Gate (chỉ SELECT/SHOW/EXPLAIN/DESCRIBE; parse fail = từ chối) → approval tường minh từng câu cho write. **Hardline: không ALTER/DROP/TRUNCATE/DELETE/UPDATE nếu không được phép tường minh.**
 - **[v0.2] Báo cáo tiến độ project** — skill tổng hợp từ workspace các project + git log, chạy tay hoặc theo cron.
 
+### Chế độ trợ lý (use-case local)
+- **[v0.2] Tìm kiếm & research** — tool `web_search` (API key trong secret store) + skill research: tìm → đọc nguồn → tổng hợp có trích dẫn vào workspace; domain fetch vẫn qua egress whitelist do người dùng kiểm soát.
+- **[v0.2] Viết content** — skill + template trong workspace, không cần tool mới.
+- **[v0.3] Subagents (delegation 1 cấp)** — định nghĩa subagent bằng file (`workspace/agents/*.md`: prompt + toolset con + budget); subagent bundled: `researcher`, `writer`, `illustrator`. Ràng buộc cứng: toolset con ⊆ toolset cha, cùng Policy Gate (không leo thang quyền, hardline áp nguyên vẹn), không delegate lồng nhau, trace lồng cây dưới span cha. Teams/độ sâu >1 vẫn nằm ở defer.
+- **[v0.3] Tạo ảnh** — tool `image_gen` qua provider API hoặc backend local không-egress, ảnh lưu vào workspace.
+
 ### Hooks & Scheduler
 - **[v0.2] Hooks lifecycle** — PreToolUse/PostToolUse với quyền **mutate/deny** (là điểm enforce policy thật, không chỉ observe), cùng các event session/bootstrap/startup; handler là Python entry point; hook lỗi không giết agent.
 - **[v0.2] Cron + heartbeat** — lịch 3 syntax (`at`/`every`/`cron`), persist qua restart, chống overlap run; heartbeat đánh thức agent định kỳ theo checklist, kiêm tín hiệu liveness để phát hiện agent treo.
@@ -68,7 +74,7 @@ Use-case đầu tiên: trợ lý DevOps cá nhân chạy local — quản lý pr
 
 ### Defer có chủ đích (chưa làm, có điều kiện mở lại)
 - Semantic memory / knowledge graph — chỉ khi FTS5 đo được là không đủ.
-- Multi-agent orchestration — chỉ khi có yêu cầu khách cụ thể.
+- Multi-agent teams / delegation lồng sâu — chỉ khi có yêu cầu khách cụ thể (delegation 1 cấp đã vào v0.3).
 - Self-evolution — chỉ sau khi immutable core chạy ổn định.
 - Multi-tenant/RBAC — không làm; mô hình là mỗi khách một instance.
 

@@ -210,11 +210,15 @@ flowchart TB
 - P2.7.4 L4 approval từng-câu cho write (hiện nguyên văn SQL + bảng ảnh hưởng; hiệu lực một lần) — DoD: approve câu A không mở được câu B (test)
 - P2.7.5 Audit mọi query kể cả bị deny — DoD: đối chiếu audit với test run
 
+**WP2.8 — Tool & skill trợ lý** (spec: `harness-local-use-case.md` S6–S7) — tuần 8
+- P2.8.1 Tool `web_search` (API key trong secret store; kết quả fetch qua egress whitelist) — DoD: key không vào context/span; domain ngoài whitelist bị chặn
+- P2.8.2 Skill bundled `research` (search → fetch → tổng hợp có trích dẫn vào workspace) + `report` (S1) + `content-writer` (S7) — DoD: mỗi skill demo được end-to-end
+
 ### 🔴 RG-2 — Gate "agent dùng được thật"
 
 | # | Tiêu chí | Bằng chứng |
 |---|---|---|
-| RG2-1 | **Dogfood = use-case local:** cả 5 kịch bản S1–S5 (`harness-local-use-case.md`) chạy thật trên project/server UAT/DB của người dùng, mỗi kịch bản ≥5 lần liên tiếp thành công | Trace runs từng kịch bản |
+| RG2-1 | **Dogfood = use-case local:** các kịch bản S1–S7 (`harness-local-use-case.md`) chạy thật trên project/server UAT/DB của người dùng (S1–S5 mỗi kịch bản ≥5 lần liên tiếp; S6–S7 ≥3 lần) | Trace runs từng kịch bản |
 | RG2-2 | AG-1..AG-5 toàn bộ xanh (2 cổng sống/chết không thoái lui khi thêm tính năng) | CI |
 | RG2-3 | Hook enforcing deny được tool call trong demo sống; hook lỗi không giết agent | Demo + test |
 | RG2-4 | Skill do agent tự draft đi hết vòng: draft → staging → duyệt → active → trigger đúng ở turn sau | Bản ghi flow |
@@ -250,6 +254,13 @@ flowchart TB
 - P3.4.2 Packaging deploy-per-tenant: compose stack, config template, backup/restore 3 db + workspace — DoD: cài sạch trên máy trắng theo doc trong ≤1 giờ bởi người không thuộc team
 - P3.4.3 Runbook vận hành + upgrade path — DoD: upgrade thử v0.2→v0.3 giữ nguyên dữ liệu
 
+**WP3.6 — Subagent delegation (1 cấp) + image_gen** (spec: `harness-local-use-case.md` §2b) — tuần 4–6
+- P3.6.1 Định nghĩa subagent file-based (`workspace/agents/<tên>.md`: prompt + toolset con + budget); subagent do agent tự tạo đi qua review gate — DoD: định nghĩa hỏng/toolset vượt cha → từ chối load
+- P3.6.2 Tool `delegate`: chạy core loop trong session con, toolset thu hẹp, budget riêng; **chặn delegate lồng nhau ở registry** — DoD: subagent gọi delegate bị deny (test)
+- P3.6.3 **Không leo thang quyền:** cùng Policy Gate + policy; hardline (AG-6/AG-7) áp nguyên vẹn trong subagent — DoD: suite AG chạy lại trong ngữ cảnh subagent, xanh
+- P3.6.4 Span subagent lồng dưới span cha; `traces get` xem được cả cây — DoD: trace demo
+- P3.6.5 Tool `image_gen` (provider API / backend local **[Inference — đánh giá khi implement]**) + subagent bundled `researcher`/`writer`/`illustrator` — DoD: S8 demo; key không vào context
+
 **WP3.5 — Hardening trước release** — tuần 6–8
 - P3.5.1 Pentest nội bộ full (theo threat model P0.4.1, cập nhật) — DoD: finding severity cao = 0, trung bình có kế hoạch
 - P3.5.2 Load/soak test: heartbeat + cron chạy 72h liên tục — DoD: không leak (memory/fd/container mồ côi)
@@ -267,6 +278,7 @@ flowchart TB
 | RG3-6 | Toàn bộ AG-1..5 xanh trên bản release | CI tag build |
 | RG3-7 | Checklist compliance khách pilot ký xác nhận | Văn bản |
 | RG3-8 | Legal xác nhận lần cuối: vendor manifest + attribution + không nhiễm GoClaw | Văn bản |
+| RG3-9 | **Subagent không leo thang quyền:** red-team cố dùng delegate để vượt hardline/policy (kể cả delegate lồng nhau, toolset khai vượt cha) → thất bại toàn bộ; S6–S8 chạy qua subagent có trace cây đầy đủ | Báo cáo + trace |
 
 **Người duyệt:** tech lead + legal + đại diện vận hành/khách pilot.
 
@@ -342,6 +354,10 @@ Sản phẩm chưa "hoàn thành" khi mới pass release gate — hoàn thành =
 | DB query read-only 4 lớp + approval từng câu | WP2.7 | RG2-8, AG-6 |
 | Hardline DB: cấm ALTER/DELETE/UPDATE nếu không được phép | P2.7.3 | RG2-8, AG-6 |
 | Quản lý project + báo cáo tiến độ (skill + cron) | S1 trên WP2.1/WP2.4 | RG2-1 (S1) |
+| Tìm kiếm & research (web_search + skill research) | WP2.8 | RG2-1 (S6) |
+| Viết content (skill) | P2.8.2 | RG2-1 (S7) |
+| Subagent delegation 1 cấp (researcher/writer/illustrator) | WP3.6 | RG3-9 |
+| Tạo ảnh (image_gen) | P3.6.5 | RG3-9 (S8) |
 | No-egress (cam kết #1) | xuyên suốt | AG-2, RG1-1, RG4-5 |
 | Fail-closed (cam kết #2) | xuyên suốt | AG-1, RG1-2, RG3-3 |
 | Non-goals (Zalo Personal, WeChat, multi-tenant, self-evolution…) | không có WP — chủ đích | RG3-8 xác nhận không lọt scope |
@@ -355,7 +371,7 @@ Sản phẩm chưa "hoàn thành" khi mới pass release gate — hoàn thành =
 | RG-0 | Phase 0 | Nền pháp lý + móng kỹ thuật sạch chưa? | 6 | Lead + Legal | Dừng, sửa quy trình trước khi code |
 | RG-1 | Phase 1 | 2 cổng sống/chết có bằng chứng chưa? | 8 | Lead + reviewer độc lập | **Dừng dự án, review kiến trúc** |
 | RG-2 | Phase 2 | Agent làm được việc thật (5 kịch bản local), an toàn không thoái lui? | 9 | Lead | Cắt scope P3, quay lại củng cố |
-| RG-3 | Phase 3 | Giao cho khách được chưa? | 8 | Lead + Legal + Ops | Hoãn release, không hạ tiêu chí |
+| RG-3 | Phase 3 | Giao cho khách được chưa? | 9 | Lead + Legal + Ops | Hoãn release, không hạ tiêu chí |
 | RG-4 | Phase 4 | Khách nghiệm thu chưa? (= hoàn thành A→Z) | 6 | Khách + Lead | Kéo dài hypercare, xử lý nguyên nhân gốc |
 
 ## 10. Nhịp theo dõi
