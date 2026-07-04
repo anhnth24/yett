@@ -6,9 +6,13 @@ Call-site (wiring) không đổi — chỉ hoán backend. Toàn bộ test BasicG
 
 from __future__ import annotations
 
+from typing import Literal
+
 from yett.policy.immutable import ImmutableCore
 from yett.policy.schema import PolicyFile
 from yett.security.gate import Decision, SessionCtx
+
+_Verdict = Literal["allow", "deny", "need_approval"]
 
 
 class PolicyEngine:
@@ -23,8 +27,9 @@ class PolicyEngine:
         # 2) rule config theo priority
         for r in self._rules:
             if r.match.matches(tool, args, ctx):
-                verdict = {"allow": "allow", "deny": "deny", "approve": "need_approval",
-                           "redact": "allow"}[r.effect]
-                return Decision(verdict, f"policy rule {r.id}", r.id)
+                mapping: dict[str, _Verdict] = {
+                    "allow": "allow", "deny": "deny", "approve": "need_approval", "redact": "allow"
+                }
+                return Decision(mapping[r.effect], f"policy rule {r.id}", r.id)
         # 3) DEFAULT DENY
         return Decision("deny", "no policy rule matched — default deny", "DEFAULT_DENY")

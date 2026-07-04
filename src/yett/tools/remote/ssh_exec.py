@@ -52,7 +52,7 @@ class SshExecTool:
 
     def _resolve_key(self, host: HostProfile) -> str:
         if host.auth.startswith("keyfile:"):
-            return self._secrets.get(host.auth.split(":", 1)[1])
+            return str(self._secrets.get(host.auth.split(":", 1)[1]))
         return ""
 
 

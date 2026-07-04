@@ -36,7 +36,8 @@ def _lookup(provider: str, model: str, pricing: dict) -> PriceRow | None:
     prov = pricing.get(provider)
     if not prov:
         return None
-    return prov.get(model) or prov.get("*")
+    row: PriceRow | None = prov.get(model) or prov.get("*")
+    return row
 
 
 def aggregate(spans: list[dict], by: str = "provider") -> dict[str, dict]:
@@ -58,7 +59,7 @@ def aggregate(spans: list[dict], by: str = "provider") -> dict[str, dict]:
 def _key(span: dict, by: str) -> str:
     a = span["attrs"]
     if by == "provider":
-        return a.get("provider", "?")
+        return str(a.get("provider", "?"))
     if by == "model":
         return f"{a.get('provider','?')}/{a.get('model','?')}"
     if by == "day":

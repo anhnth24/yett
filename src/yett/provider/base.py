@@ -6,7 +6,7 @@ không đụng core. Adapter cụ thể (anthropic, openai_compat) implement Pro
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Literal, Protocol
 

@@ -11,7 +11,7 @@ def usage_report(spans: list[dict], *, by: str = "provider") -> dict[str, dict]:
 
 
 def total_cost(spans: list[dict]) -> float:
-    return round(sum(v["cost_usd"] for v in cost.aggregate(spans, by="all").values()), 6)
+    return round(float(sum(v["cost_usd"] for v in cost.aggregate(spans, by="all").values())), 6)
 
 
 def check_budget(spans: list[dict], monthly_limit: float | None) -> dict:

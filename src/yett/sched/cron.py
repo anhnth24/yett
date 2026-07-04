@@ -81,7 +81,7 @@ def compute_next(spec: str, now: float, tz: str) -> float | None:
             from datetime import datetime, timezone as _tz
 
             base = datetime.fromtimestamp(now, tz=_tz.utc)
-            return croniter(val, base).get_next(float)
+            return float(croniter(val, base).get_next(float))
         except Exception:
             return now + 3600.0  # fallback: mỗi giờ
     return None

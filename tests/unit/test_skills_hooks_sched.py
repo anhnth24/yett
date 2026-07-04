@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from yett.errors import UserFacingError
-from yett.hooks.runner import Hook, HookEvent, HookOutcome, HookRunner
+from yett.hooks.runner import HookEvent, HookOutcome, HookRunner
 from yett.sched.cron import CronJob, CronStore, compute_next
 from yett.sched.unattended import TimeoutApprover
 from yett.skills.lint import lint_description

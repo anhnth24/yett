@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 
-from yett.config.models import SandboxCfg, SecurityCfg, ToolRule
+from yett.config.models import SecurityCfg, ToolRule
 from yett.sandbox.local import LocalSandbox
 from yett.security.basic_gate import BasicGate
 from yett.tools.builtin.exec import ExecTool

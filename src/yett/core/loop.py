@@ -8,12 +8,12 @@ Bất biến: bounded iterations; mỗi tool call qua wiring (Gate→...→Filte
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable
+from typing import Callable
 
 from yett.core.cancel import Cancelled, CancelToken
 from yett.core.context import Context
 from yett.obs.tracer import SpanKind
-from yett.provider.base import ChatResult, ToolSchema
+from yett.provider.base import ChatResult
 from yett.provider.failover import ContextOverflow, FailoverRouter
 from yett.security.gate import PolicyGate
 from yett.tools.registry import Registry

@@ -27,7 +27,7 @@ _DENY_PATH = re.compile(r"(/etc/shadow|/etc/sudoers|\.ssh/id_|\.aws/credentials|
 def check_exec(cmd: str) -> Decision | None:
     """Trả Decision(deny) nếu lệnh chạm hardline; None nếu không."""
     if _DENY_EXEC.search(cmd):
-        return Decision("deny", f"hardline: lệnh phá hoại bị cấm tuyệt đối", "DENY_EXEC")
+        return Decision("deny", "hardline: lệnh phá hoại bị cấm tuyệt đối", "DENY_EXEC")
     return None
 
 

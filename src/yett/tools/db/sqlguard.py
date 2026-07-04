@@ -8,6 +8,7 @@ multi-statement, CTE-DML, SELECT INTO, proc/CALL/EXEC. Parse fail → DENY (fail
 from __future__ import annotations
 
 import re
+from typing import cast
 
 import sqlglot
 from sqlglot import exp
@@ -72,7 +73,7 @@ def classify_sql(sql: str, dialect: str = "postgres") -> Decision:
             return Decision("allow", "read-only metadata query", "SQL_READONLY")
         return Decision("deny", f"lệnh không được phép: {word or 'command'}", "SQL_NOT_READ")
     # bất kỳ node ghi nào → hardline
-    if _has_write(stmt):
+    if _has_write(cast(exp.Expression, stmt)):
         return Decision(
             "deny",
             "HARDLINE: câu lệnh ghi/đổi cấu trúc (ALTER/DROP/DELETE/UPDATE/INSERT/TRUNCATE...) "

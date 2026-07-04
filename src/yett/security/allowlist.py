@@ -14,8 +14,9 @@ def match_allowlist(tool: str, args: dict, rules: list[ToolRule]) -> Decision | 
         if rule.tool not in (tool, "*"):
             continue
         if _args_match(args, rule.arg_patterns):
-            verdict = "allow" if rule.effect == "allow" else "need_approval"
-            return Decision(verdict, f"allowlist: {rule.tool}", f"ALLOW_{rule.tool}")
+            if rule.effect == "allow":
+                return Decision("allow", f"allowlist: {rule.tool}", f"ALLOW_{rule.tool}")
+            return Decision("need_approval", f"allowlist: {rule.tool}", f"ALLOW_{rule.tool}")
     return None
 
 

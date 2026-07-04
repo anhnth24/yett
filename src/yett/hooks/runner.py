@@ -8,8 +8,8 @@ non-enforcing lỗi → bỏ qua + log. Hook có timeout riêng, lỗi không gi
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
-from typing import Awaitable, Callable, Literal, Protocol
+from dataclasses import dataclass
+from typing import Callable, Literal, Protocol
 
 
 @dataclass

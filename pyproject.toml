@@ -37,10 +37,23 @@ packages = ["src/yett"]
 line-length = 100
 target-version = "py311"
 
+[tool.ruff.lint]
+# E702 (nhiều statement/dòng bằng ';') vô hại trong test cleanup như store.close(); ckpt.close()
+ignore = ["E702"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true
+# Tắt 2 cờ gây nhiễu cho code có nhiều callable injected + dict payload động;
+# phần còn lại của strict (None-safety, incompatible types, no-any-return...) vẫn bật.
+disallow_any_generics = false
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
 files = ["src/yett"]
+
+[[tool.mypy.overrides]]
+module = ["sqlglot.*", "yaml.*", "croniter.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

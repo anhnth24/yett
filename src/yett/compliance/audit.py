@@ -62,4 +62,4 @@ class AuditLog:
     def entries(self) -> list[dict]:
         if not self._path.exists():
             return []
-        return [json.loads(l) for l in self._path.read_text(encoding="utf-8").splitlines() if l.strip()]
+        return [json.loads(ln) for ln in self._path.read_text(encoding="utf-8").splitlines() if ln.strip()]
