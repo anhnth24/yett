@@ -4,7 +4,44 @@
 >
 > **Tên:** *yett* = cổng lưới sắt của thành lũy, loại thả xuống đóng kín theo mặc định — đúng triết lý fail-closed của Policy Gate (mọi tool call qua một cổng, mặc định từ chối). Lệnh CLI: `yett`.
 >
-> **Trạng thái:** Giai đoạn thiết kế (Phase 0 chưa bắt đầu). Repo hiện chứa bộ tài liệu kiến trúc/kế hoạch; code sẽ được phát triển theo lộ trình trong `docs/harness-master-plan.md`.
+> **Trạng thái:** Bộ khung code Phase 1–3 đã implement với test đầy đủ (161 test xanh, mypy strict, ruff, import-linter). Xem [Trạng thái implement](#trạng-thái-implement) bên dưới.
+
+## Chạy thử nhanh
+
+```bash
+pip install -e ".[dev]"           # hoặc: pip install pydantic pyyaml sqlglot pytest pytest-asyncio
+yett demo                          # chạy một turn agent offline (FakeProvider) end-to-end
+yett traces list --state .yett-demo/state
+yett usage --state .yett-demo/state
+pytest -q                          # 161 test
+```
+
+## Trạng thái implement
+
+Đã có code chạy được + test cho lõi cả 3 phase. Phần cần tài nguyên ngoài (LLM API thật, Docker daemon, SSH/VPN tới server thật, Telegram) được thiết kế qua interface + backend inject được, và test bằng fake/offline — đúng nguyên tắc no-egress trong test.
+
+| Khối | Trạng thái | Test |
+|---|---|---|
+| Policy Gate fail-closed + deny-list + allowlist + filters | ✅ | `test_security_basic`, `test_filters` |
+| **Hardline cấm xóa file OS qua SSH/VPN** (cmdguard) | ✅ | `test_cmdguard` (45 case né tránh) |
+| **Hardline DB read-only** (sqlguard) | ✅ | `test_sqlguard` (26 case) |
+| Provider interface + failover + FakeProvider | ✅ | `test_provider_failover` |
+| Tool registry + wiring bất biến + builtin tools + project scope | ✅ | `test_tools_wiring` |
+| Sandbox local (test) + docker (hardened) | ✅ (docker cần daemon) | `test_tools_wiring` |
+| Agent loop: bounded + prune + checkpoint/resume + cancel | ✅ | `test_core_loop` |
+| Tracing + span store + cost ledger | ✅ | `test_obs` |
+| Memory: workspace + review gate + FTS5 (tiếng Việt) | ✅ | `test_memory` |
+| Remote ops: host profile + ssh_exec + log_read + vpn | ✅ (backend inject) | `test_remote_db` |
+| DB tools: db_query/db_config read-only 4 lớp | ✅ (executor inject) | `test_remote_db` |
+| Skills: loader + disclosure + lint + review gate | ✅ | `test_skills_hooks_sched` |
+| Hooks: mutate/deny + cách ly lỗi | ✅ | `test_skills_hooks_sched` |
+| Scheduler: cron + overlap + unattended approval timeout | ✅ | `test_skills_hooks_sched` |
+| Eval suite golden tasks + web_search | ✅ | `test_eval_websearch` |
+| Policy engine (policy-as-config, drop-in) + immutable core | ✅ | `test_phase3` |
+| Audit hash-chain + retention + channel gating + analytics | ✅ | `test_phase3`, `test_phase3_extra` |
+| Subagent delegation 1 cấp (không leo thang quyền) | ✅ | `test_phase3` |
+| RPC code execution (broker + caps + secret strip) | ✅ (in-process; production dùng socket-in-container) | `test_phase3_extra` |
+| Adapter LLM thật (Anthropic/OpenAI), Telegram, VPN/SSH CLI thật | ⏳ interface sẵn, cần tài nguyên ngoài để nối | — |
 
 ## Repo này sẽ làm gì
 
