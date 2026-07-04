@@ -21,6 +21,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest==8.3.4",
+  "pytest-asyncio==1.4.0",
   "mypy==1.14.1",
   "ruff==0.9.2",
   "import-linter==2.1",
@@ -44,3 +45,4 @@ files = ["src/yett"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+asyncio_mode = "auto"
