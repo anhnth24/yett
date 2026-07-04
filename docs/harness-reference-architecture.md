@@ -3,6 +3,8 @@
 > **Mục đích:** Tài liệu kiến trúc tham chiếu để build Harness riêng (theo sơ đồ 9 khối: Scheduler, Memory, Provider/Model, Tools, Skills, Hooks, Security, Guardrails, Monitoring).
 >
 > **Quy ước nguồn:** Thông tin đánh dấu *(README)* là verified từ README của repo tại thời điểm 07/2026. Đánh giá/khuyến nghị đánh dấu **[Inference]** là nhận định kiến trúc, cần team review.
+>
+> **Cập nhật 04/07/2026:** Các claim trong tài liệu này đã được verify sâu (đọc LICENSE/docs/source tree thực tế) — xem **`harness-deep-comparison.md`** cho verdict từng claim và chiến lược cập nhật theo các quyết định đã chốt (Python core, Docker sandbox, không multi-tenant).
 
 ---
 
