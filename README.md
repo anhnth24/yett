@@ -44,6 +44,15 @@ Nhãn phase theo lộ trình: **[v0.1]** MVP → **[v0.2]** mở rộng cho agen
 - **[v0.2] Progressive disclosure** — chỉ nạp name+description của mọi skill vào context, body chỉ nạp khi dùng — không vỡ context.
 - **[v0.2] Skill do agent tự tạo, có gate** — agent draft skill sau task phức tạp thành công và vá skill khi dùng thấy lỗi, nhưng mọi skill agent viết nằm ở staging đến khi được duyệt (scan code + provenance).
 
+### Vận hành từ xa & dữ liệu (use-case local — dogfood v0.2)
+
+Use-case đầu tiên: trợ lý DevOps cá nhân chạy local — quản lý project, báo cáo tiến độ, code, deploy UAT, điều tra lỗi, kiểm tra dữ liệu (spec: `docs/harness-local-use-case.md`).
+
+- **[v0.2] SSH remote ops** — chỉ đến host khai báo trong profile config; lệnh phân lớp: read-only log/status tự động cho phép, deploy script khai báo trước phải approval từng lần, còn lại mặc định từ chối. **Hardline: tuyệt đối không lệnh xóa file OS qua SSH/VPN** (rm, find -delete, xargs rm, mọi biến thể né tránh) — không có đường approval; xóa hợp lệ duy nhất là bên trong deploy script do người dùng tự viết.
+- **[v0.2] VPN** — bọc OpenVPN/Fortinet client (đánh giá openfortivpn), tự bật trước khi SSH nếu host yêu cầu; credentials nằm trong secret store, không bao giờ vào context của model.
+- **[v0.2] Query DB an toàn** — connection profile trong secret store (model chỉ thấy tên profile); phòng thủ 4 lớp: DB user read-only → session read-only → SQL classifier trong Policy Gate (chỉ SELECT/SHOW/EXPLAIN/DESCRIBE; parse fail = từ chối) → approval tường minh từng câu cho write. **Hardline: không ALTER/DROP/TRUNCATE/DELETE/UPDATE nếu không được phép tường minh.**
+- **[v0.2] Báo cáo tiến độ project** — skill tổng hợp từ workspace các project + git log, chạy tay hoặc theo cron.
+
 ### Hooks & Scheduler
 - **[v0.2] Hooks lifecycle** — PreToolUse/PostToolUse với quyền **mutate/deny** (là điểm enforce policy thật, không chỉ observe), cùng các event session/bootstrap/startup; handler là Python entry point; hook lỗi không giết agent.
 - **[v0.2] Cron + heartbeat** — lịch 3 syntax (`at`/`every`/`cron`), persist qua restart, chống overlap run; heartbeat đánh thức agent định kỳ theo checklist, kiêm tín hiệu liveness để phát hiện agent treo.
@@ -73,7 +82,8 @@ Nhãn phase theo lộ trình: **[v0.1]** MVP → **[v0.2]** mở rộng cho agen
 | [`docs/harness-deep-comparison.md`](docs/harness-deep-comparison.md) | Verify từng claim về 3 repo (verdict + nguồn) + đánh giá vendorability |
 | [`docs/harness-master-plan.md`](docs/harness-master-plan.md) | Kế hoạch tổng quan: làm gì / học từ đâu / vì sao; lộ trình 4 phase + exit criteria; rủi ro |
 | [`docs/harness-architecture-design.md`](docs/harness-architecture-design.md) | Sơ đồ kiến trúc (component + sequence) + mô tả từng thành phần + bố trí dữ liệu |
-| [`docs/harness-execution-plan.md`](docs/harness-execution-plan.md) | Kế hoạch thực thi chi tiết: work package/task + dependency + DoD + hệ thống red gate RG-0→RG-3 |
+| [`docs/harness-execution-plan.md`](docs/harness-execution-plan.md) | Kế hoạch thực thi chi tiết: work package/task + dependency + DoD + hệ thống red gate RG-0→RG-4 + ma trận phủ A→Z |
+| [`docs/harness-local-use-case.md`](docs/harness-local-use-case.md) | Use-case đầu tiên (trợ lý DevOps cá nhân): 5 kịch bản, tool remote-ops/DB, hardline rules |
 
 ## Quyết định đã chốt
 

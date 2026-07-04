@@ -27,6 +27,8 @@ Bên cạnh red gate theo chặng có **guard thường trực (AG — always-on
 | AG-3 | Lint license header trên `vendor/` + CI chặn import từ đường dẫn ngoài vendor manifest | P0.2 |
 | AG-4 | Secret scan trên diff + test redact filter | P1.4 |
 | AG-5 | Checklist RPC security (từ Hermes issues #41/#7071) là test suite, không phải tài liệu | P2.5 |
+| AG-6 | DB hardline suite: mọi DML/DDL (kể cả obfuscated/multi-statement/CTE) bị chặn; parser fail → deny | P2.7 |
+| AG-7 | Remote-deletion hardline suite: mọi lệnh xóa file OS qua SSH/VPN (kể cả né tránh: xargs/busybox/subshell/alias) bị chặn tuyệt đối, không có đường approval | P2.6 |
 
 ---
 
@@ -37,7 +39,7 @@ flowchart LR
     P0["Phase 0<br/>Chuẩn bị<br/>(~2 tuần)"] --> RG0{"RG-0<br/>Legal &<br/>Foundation"}
     RG0 --> P1["Phase 1<br/>MVP v0.1<br/>(~6 tuần)"]
     P1 --> RG1{"RG-1<br/>2 cổng<br/>sống/chết"}
-    RG1 --> P2["Phase 2<br/>v0.2<br/>(~6 tuần)"]
+    RG1 --> P2["Phase 2<br/>v0.2 + use-case local<br/>(~8 tuần)"]
     P2 --> RG2{"RG-2<br/>Agent<br/>dùng được thật"}
     RG2 --> P3["Phase 3<br/>v0.3<br/>(~8 tuần)"]
     P3 --> RG3{"RG-3<br/>Release /<br/>khách đầu tiên"}
@@ -51,7 +53,7 @@ flowchart LR
     RG4 -.->|fail| P4
 ```
 
-**[Inference]** Tổng ~28 tuần (~7 tháng) đến nghiệm thu, với 2–3 dev; con số calibrate lại sau RG-1.
+**[Inference]** Tổng ~30 tuần (~7.5 tháng) đến nghiệm thu, với 2–3 dev; con số calibrate lại sau RG-1. (Phase 2 kéo dài 6→8 tuần khi thêm use-case local — WP2.6/WP2.7.)
 
 ---
 
@@ -66,7 +68,7 @@ flowchart LR
 | P0.1.3 | Spec nội bộ **Tracing model** (từ docs 10) | P0.1.1 | nt |
 | P0.1.4 | Spec nội bộ **Agent loop V3** (từ docs 01) | P0.1.1 | nt |
 | P0.1.5 | Spec nội bộ **Permission matrix** (từ docs 09, 23) | P0.1.1 | nt |
-| P0.2.1 | Vendor intake Hermes: `tools/environments/{base,local,docker,file_sync}.py` → `vendor/hermes_environments/` + LICENSE + manifest ghi commit SHA nguồn | — | Test standalone: mở Docker session → chạy lệnh → nhận structured result → cleanup |
+| P0.2.1 | Vendor intake Hermes: `tools/environments/{base,local,docker,ssh,file_sync}.py` → `vendor/hermes_environments/` + LICENSE + manifest ghi commit SHA nguồn (`ssh.py` phục vụ use-case local — xem `harness-local-use-case.md`) | — | Test standalone: mở Docker session → chạy lệnh → nhận structured result → cleanup; SSH session tương tự trên host test |
 | P0.2.2 | Vendor intake schema `hermes_state.py` → `vendor/hermes_state/` (chỉ schema + FTS5 workaround) | — | Tạo db, migrate, insert, FTS5 + trigram query chạy |
 | P0.3.1 | Skeleton Python: layout package theo kiến trúc §3, pyproject.toml pin exact deps, pre-commit | — | `pip install -e .` + import mọi package OK |
 | P0.3.2 | CI: lint + test + build container + AG-3 | P0.3.1 | CI xanh; PR thử có import lậu từ vendor bị chặn |
@@ -162,7 +164,9 @@ flowchart TB
 
 ---
 
-## 5. Phase 2 — v0.2 (~6 tuần [Inference])
+## 5. Phase 2 — v0.2 (~8 tuần [Inference])
+
+**Mục tiêu phase định nghĩa lại theo use-case local** (`harness-local-use-case.md`): cuối phase, chính người dùng chạy được 5 kịch bản S1–S5 (quản lý project/báo cáo, code, deploy UAT qua VPN/SSH, điều tra log, query DB read-only) trên project/server/DB thật của mình.
 
 ### Work packages
 
@@ -191,17 +195,34 @@ flowchart TB
 - P2.5.3 Từng RPC call xuyên Policy Gate — DoD: tool bị deny qua RPC cũng bị deny (test)
 - P2.5.4 **Security suite AG-5** từ Hermes issues #41/#7071: PYTHONPATH injection, env leak, escape — DoD: toàn bộ đỏ → xanh
 
+**WP2.6 — Remote Ops (SSH + VPN + log)** (spec: `harness-local-use-case.md` §3) — tuần 5–7
+- P2.6.1 Nối vendored SSH backend + host profile config (address, auth, tier, log_paths, deploy_script) — DoD: host ngoài config bị deny
+- P2.6.2 Phân lớp lệnh SSH trong Policy Gate: hardline xóa-file → read-only allowlist → deploy approval → default deny — DoD: bảng test từng lớp
+- P2.6.3 **Hardline xóa-file-remote (AG-7):** phân loại sau parse, bộ né tránh (xargs/busybox/`$(echo rm)`/alias/`bash -c`/`find -delete`) bị chặn; parse fail → deny; KHÔNG có đường approval — DoD: suite AG-7 xanh
+- P2.6.4 Tool `vpn` (openvpn + fortinet — đánh giá `openfortivpn` **[Inference — verify khi implement]**): connect/disconnect/status, credentials từ secret store không vào context — DoD: secret không xuất hiện trong bất kỳ span/log/context nào (test)
+- P2.6.5 Tool `log_read` (đường tắt read-only theo `log_paths`) — DoD: đường dẫn ngoài khai báo bị deny
+- P2.6.6 Flow deploy S3: VPN → approval nguyên văn lệnh+host → chạy → báo kết quả + log đuôi — DoD: demo trên server test
+
+**WP2.7 — DB query an toàn** (spec: `harness-local-use-case.md` §4) — tuần 6–8
+- P2.7.1 Tool `db_config`: connection profile trong secret store, model chỉ thấy tên profile — DoD: connection string không vào context/span (test)
+- P2.7.2 Tool `db_query` + L2 session read-only theo từng DBMS — DoD: UPDATE trên session vẫn fail ở tầng DB dù classifier bị tắt trong test
+- P2.7.3 **L3 SQL classifier trong Policy Gate (AG-6):** chỉ SELECT/SHOW/EXPLAIN/DESCRIBE; multi-statement/CTE-DML/SELECT-INTO/proc-write → deny; parse fail → deny; ALTER/DROP/TRUNCATE/DELETE/UPDATE/INSERT trong hardline — DoD: suite né tránh (obfuscation, comment-splice, unicode) xanh
+- P2.7.4 L4 approval từng-câu cho write (hiện nguyên văn SQL + bảng ảnh hưởng; hiệu lực một lần) — DoD: approve câu A không mở được câu B (test)
+- P2.7.5 Audit mọi query kể cả bị deny — DoD: đối chiếu audit với test run
+
 ### 🔴 RG-2 — Gate "agent dùng được thật"
 
 | # | Tiêu chí | Bằng chứng |
 |---|---|---|
-| RG2-1 | **Dogfood:** một quy trình nghiệp vụ thật của team chạy hoàn toàn trên harness (skills + memory + scheduler), ≥5 lần liên tiếp thành công | Trace 5 runs |
+| RG2-1 | **Dogfood = use-case local:** cả 5 kịch bản S1–S5 (`harness-local-use-case.md`) chạy thật trên project/server UAT/DB của người dùng, mỗi kịch bản ≥5 lần liên tiếp thành công | Trace runs từng kịch bản |
 | RG2-2 | AG-1..AG-5 toàn bộ xanh (2 cổng sống/chết không thoái lui khi thêm tính năng) | CI |
 | RG2-3 | Hook enforcing deny được tool call trong demo sống; hook lỗi không giết agent | Demo + test |
 | RG2-4 | Skill do agent tự draft đi hết vòng: draft → staging → duyệt → active → trigger đúng ở turn sau | Bản ghi flow |
 | RG2-5 | RPC security suite (AG-5) xanh; pentest nội bộ 0.5 ngày trên RPC không tìm được escape **[Inference — mức pentest do team chốt]** | Báo cáo |
 | RG2-6 | Số liệu từ traces: token/cost per task của quy trình dogfood, làm baseline tối ưu | Report từ span store |
 | RG2-7 | `session_search` trả kết quả liên quan trên dữ liệu dogfood ≥2 tuần (đánh giá mù bởi người không làm WP2.3) | Biên bản đánh giá |
+| RG2-8 | **DB hardline:** suite AG-6 xanh; demo sống: yêu cầu agent "sửa trạng thái đơn hàng trong DB" → Gate chặn, agent trả về yêu cầu approval kèm nguyên văn SQL; approve một câu không mở câu khác | CI + demo |
+| RG2-9 | **Remote-deletion hardline:** suite AG-7 xanh; demo sống: yêu cầu agent "xóa file log cũ trên UAT" → deny tuyệt đối kể cả khi người dùng nói "cứ xóa đi" trong chat | CI + demo |
 
 ---
 
@@ -316,6 +337,11 @@ Sản phẩm chưa "hoàn thành" khi mới pass release gate — hoàn thành =
 | CLI/TUI | WP1.7 | RG1 (demo end-to-end) |
 | Telegram → Zalo Bot API | WP3.3 | RG3-1 |
 | Packaging deploy-per-tenant + runbook | P3.4.2–3 | RG3-1, RG4-1..4 |
+| Remote ops: SSH host profile + phân lớp lệnh + VPN | WP2.6 | RG2-1 (S3, S4), RG2-9 |
+| Hardline xóa-file-remote (không approval) | P2.6.3 | RG2-9, AG-7 |
+| DB query read-only 4 lớp + approval từng câu | WP2.7 | RG2-8, AG-6 |
+| Hardline DB: cấm ALTER/DELETE/UPDATE nếu không được phép | P2.7.3 | RG2-8, AG-6 |
+| Quản lý project + báo cáo tiến độ (skill + cron) | S1 trên WP2.1/WP2.4 | RG2-1 (S1) |
 | No-egress (cam kết #1) | xuyên suốt | AG-2, RG1-1, RG4-5 |
 | Fail-closed (cam kết #2) | xuyên suốt | AG-1, RG1-2, RG3-3 |
 | Non-goals (Zalo Personal, WeChat, multi-tenant, self-evolution…) | không có WP — chủ đích | RG3-8 xác nhận không lọt scope |
@@ -328,7 +354,7 @@ Sản phẩm chưa "hoàn thành" khi mới pass release gate — hoàn thành =
 |---|---|---|---|---|---|
 | RG-0 | Phase 0 | Nền pháp lý + móng kỹ thuật sạch chưa? | 6 | Lead + Legal | Dừng, sửa quy trình trước khi code |
 | RG-1 | Phase 1 | 2 cổng sống/chết có bằng chứng chưa? | 8 | Lead + reviewer độc lập | **Dừng dự án, review kiến trúc** |
-| RG-2 | Phase 2 | Agent làm được việc thật, an toàn không thoái lui? | 7 | Lead | Cắt scope P3, quay lại củng cố |
+| RG-2 | Phase 2 | Agent làm được việc thật (5 kịch bản local), an toàn không thoái lui? | 9 | Lead | Cắt scope P3, quay lại củng cố |
 | RG-3 | Phase 3 | Giao cho khách được chưa? | 8 | Lead + Legal + Ops | Hoãn release, không hạ tiêu chí |
 | RG-4 | Phase 4 | Khách nghiệm thu chưa? (= hoàn thành A→Z) | 6 | Khách + Lead | Kéo dài hypercare, xử lý nguyên nhân gốc |
 
