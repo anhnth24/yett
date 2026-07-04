@@ -41,15 +41,17 @@ flowchart LR
     P2 --> RG2{"RG-2<br/>Agent<br/>dùng được thật"}
     RG2 --> P3["Phase 3<br/>v0.3<br/>(~8 tuần)"]
     P3 --> RG3{"RG-3<br/>Release /<br/>khách đầu tiên"}
-    RG3 --> GA["Pilot deploy"]
+    RG3 --> P4["Phase 4<br/>Pilot & bàn giao<br/>(~6 tuần)"]
+    P4 --> RG4{"RG-4<br/>Nghiệm thu<br/>= sản phẩm hoàn thành"}
 
     RG0 -.->|fail| P0
     RG1 -.->|fail| P1
     RG2 -.->|fail| P2
     RG3 -.->|fail| P3
+    RG4 -.->|fail| P4
 ```
 
-**[Inference]** Tổng ~22 tuần (5–5.5 tháng) với 2–3 dev; con số calibrate lại sau RG-1.
+**[Inference]** Tổng ~28 tuần (~7 tháng) đến nghiệm thu, với 2–3 dev; con số calibrate lại sau RG-1.
 
 ---
 
@@ -249,7 +251,78 @@ flowchart TB
 
 ---
 
-## 7. Sổ đăng ký gate (tóm tắt)
+## 7. Phase 4 — Pilot & bàn giao (~6 tuần [Inference]) — chặng "đến Z"
+
+Sản phẩm chưa "hoàn thành" khi mới pass release gate — hoàn thành = chạy ở khách, được nghiệm thu, team khách vận hành được. Phase này biến bản release thành sản phẩm được xác nhận.
+
+### Work packages
+
+**WP4.1 — Deploy pilot** — tuần 1–2
+- P4.1.1 Khảo sát hạ tầng khách thực tế + điều chỉnh config template — DoD: checklist hạ tầng ký xác nhận (Docker daemon, egress đến provider API, tài khoản)
+- P4.1.2 Cài đặt theo runbook RG3-1, cấu hình policy theo nghiệp vụ khách — DoD: 5 kịch bản nghiệp vụ của khách chạy pass trên môi trường khách
+- P4.1.3 Thiết lập backup/restore + kiểm tra khôi phục thật — DoD: restore từ backup trên máy khác, dữ liệu nguyên vẹn
+
+**WP4.2 — Hypercare** — tuần 2–5
+- P4.2.1 Theo dõi qua traces/audit (on-site hoặc theo cơ chế khách cho phép — dữ liệu không rời hạ tầng khách) — DoD: báo cáo tuần từ span store
+- P4.2.2 Tune allowlist/approval theo tỉ lệ deny thực tế — DoD: tỉ lệ deny-sai giảm qua từng tuần mà không nới hardline list
+- P4.2.3 Fix theo SLA hypercare; mọi fix qua CI đầy đủ AG-1..5 rồi mới lên khách — DoD: log fix + CI run từng bản vá
+
+**WP4.3 — Bàn giao** — tuần 5–6
+- P4.3.1 Đào tạo admin khách: vận hành, duyệt memory/skill, đọc traces, quy trình approval — DoD: admin khách tự xử lý 3 tình huống mẫu không cần team
+- P4.3.2 Hồ sơ bàn giao: runbook bản khách, sổ policy, biên bản compliance, kế hoạch retention — DoD: bộ hồ sơ đủ mục theo hợp đồng
+- P4.3.3 Chốt backlog v0.4 từ dữ liệu hypercare (kể cả đánh giá lại các mục Defer: FTS5 có đủ không?) — DoD: backlog được ưu tiên hóa, có số liệu đính kèm
+
+### 🔴 RG-4 — Gate nghiệm thu (sản phẩm hoàn thành)
+
+| # | Tiêu chí | Bằng chứng |
+|---|---|---|
+| RG4-1 | Hệ thống chạy liên tục ≥30 ngày ở khách, uptime theo SLA, không sự cố an ninh | Báo cáo hypercare + audit log |
+| RG4-2 | ≥N quy trình nghiệp vụ của khách chạy production (N chốt trong hợp đồng pilot) | Traces + xác nhận khách |
+| RG4-3 | Admin khách vận hành độc lập (xử lý 3 tình huống mẫu không cần team) | Biên bản đào tạo |
+| RG4-4 | Restore từ backup được diễn tập thành công trên hạ tầng khách | Biên bản diễn tập |
+| RG4-5 | Không dữ liệu nào rời hạ tầng khách trong suốt pilot (đối chiếu audit + cấu hình egress) | Đối chiếu |
+| RG4-6 | Biên bản nghiệm thu ký bởi khách | Văn bản |
+
+**Người duyệt:** khách pilot + lead. Pass RG-4 = **sản phẩm hoàn thành từ A đến Z**; goal của plan này đóng.
+
+---
+
+## 8. Ma trận phủ A→Z — mọi chức năng cam kết đều có task và gate
+
+Đối chiếu toàn bộ chức năng trong `README.md` với work package và gate kiểm chứng. Quy tắc: **chức năng không có dòng trong bảng này = chưa được plan** (khi thêm chức năng vào README phải thêm dòng tương ứng).
+
+| Chức năng (README) | Work package / task | Gate kiểm chứng |
+|---|---|---|
+| Agent loop bounded (Prune, Checkpoint) | WP1.2 | RG1-4, RG1-6 |
+| Provider layer (2 adapter, failover, cost) | WP1.1 | RG1-5, RG1-7 |
+| RPC code execution | WP2.5 | RG2-5, AG-5 |
+| Tool runtime (registry, schema, error agent-sửa-được) | WP1.3 (P1.3.1) | RG1-3 |
+| Docker sandbox hardened | P0.2.1 + P1.3.2 | RG0-5, RG1-1 |
+| Policy Gate fail-closed | WP1.4 | RG1-2, RG1-3, AG-1 |
+| Result Filters (redact + injection scan) | P1.4.4 | AG-4, RG1-1 |
+| Policy engine policy-as-config | WP3.1 (P3.1.1–2, 4) | RG3-2 |
+| Immutable core | P3.1.3 | RG3-3 |
+| Working memory file-based + token budget | P1.5.1 | RG1-6 |
+| Memory review gate | P1.5.2 + P1.2.5 | RG1-8 |
+| Cross-session memory FTS5 | WP2.3 | RG2-7 |
+| Skills engine agentskills.io + precedence | P2.1.1 | RG2-1 |
+| Progressive disclosure | P2.1.2 | RG2-1 (đo token trong dogfood) |
+| Skill agent tự tạo + review gate | P2.1.4 | RG2-4 |
+| Hooks mutate/deny + cách ly lỗi | WP2.2 | RG2-3 |
+| Cron + heartbeat (chống overlap, liveness) | WP2.4 | RG2-1 |
+| Tracing first-class + CLI | WP1.6 | RG1-5 |
+| Analytics on-prem (/usage, /insights) | P3.4.1 | RG3 (đối chiếu RG2-6) |
+| Compliance layer (audit, phân loại, retention) | WP3.2 | RG3-4, RG3-7, RG4-5 |
+| CLI/TUI | WP1.7 | RG1 (demo end-to-end) |
+| Telegram → Zalo Bot API | WP3.3 | RG3-1 |
+| Packaging deploy-per-tenant + runbook | P3.4.2–3 | RG3-1, RG4-1..4 |
+| No-egress (cam kết #1) | xuyên suốt | AG-2, RG1-1, RG4-5 |
+| Fail-closed (cam kết #2) | xuyên suốt | AG-1, RG1-2, RG3-3 |
+| Non-goals (Zalo Personal, WeChat, multi-tenant, self-evolution…) | không có WP — chủ đích | RG3-8 xác nhận không lọt scope |
+
+---
+
+## 9. Sổ đăng ký gate (tóm tắt)
 
 | Gate | Sau | Câu hỏi gate trả lời | Số tiêu chí | Người duyệt | Fail 2 lần → |
 |---|---|---|---|---|---|
@@ -257,8 +330,9 @@ flowchart TB
 | RG-1 | Phase 1 | 2 cổng sống/chết có bằng chứng chưa? | 8 | Lead + reviewer độc lập | **Dừng dự án, review kiến trúc** |
 | RG-2 | Phase 2 | Agent làm được việc thật, an toàn không thoái lui? | 7 | Lead | Cắt scope P3, quay lại củng cố |
 | RG-3 | Phase 3 | Giao cho khách được chưa? | 8 | Lead + Legal + Ops | Hoãn release, không hạ tiêu chí |
+| RG-4 | Phase 4 | Khách nghiệm thu chưa? (= hoàn thành A→Z) | 6 | Khách + Lead | Kéo dài hypercare, xử lý nguyên nhân gốc |
 
-## 8. Nhịp theo dõi
+## 10. Nhịp theo dõi
 
 - **Hàng tuần:** review board task theo WP; cập nhật % và blocker; AG dashboard (5 guard) phải xanh trên main.
 - **Cuối mỗi WP:** demo nội bộ 15' — không demo được coi như chưa xong (DoD là demo được, không phải merge được).
