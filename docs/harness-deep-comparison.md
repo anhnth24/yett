@@ -114,6 +114,28 @@
 
 ---
 
+## 3b. Repo khác đã scout
+
+### blogminhquy/javis-os (scout 04/07/2026 theo yêu cầu)
+
+**Verdict: KHÔNG vendor — pháp lý không cho phép; gần như không có gì để học.**
+
+| Tiêu chí | Kết quả |
+|---|---|
+| Bản chất | KHÔNG phải agent harness — là web UI/wrapper FastAPI bọc **Claude Code CLI chạy subprocess** làm "brain" (frontend → FastAPI → `claude` CLI → MCP). Agent loop là của Anthropic, không phải của repo |
+| License | **Không có file LICENSE** (đã check LICENSE/COPYING các biến thể — 404) → mặc định all-rights-reserved, **không được vendor bất kỳ dòng code nào** |
+| Quy mô/chất lượng | Repo **8 ngày tuổi** (v0.1.0 26/06 → v0.9.5 04/07/2026), 68⭐, 1 contributor người + Claude co-author, ~80 commits, **không có test**, CI chỉ publish Docker image |
+| Security | Chỉ ở tầng web-app (login, token, rate limit); Claude chạy "toàn quyền", **zero sandbox** — ngược hoàn toàn posture fail-closed của ta |
+| Liên quan đến plan | Không có VPN/SSH tooling, không WSL2, không policy layer, không tracing. Không giải bài toán khó nào của ta |
+
+**Hai điểm duy nhất đáng liếc qua (học ý tưởng, không copy):**
+1. `server/zalo_login.py` — pattern QR-login Zalo bằng cách shell-out CLI ngoài với `HOME` cô lập per-session (multi-account). Là reference implementation kênh Zalo Việt Nam duy nhất thấy được ngoài OpenClaw — ghi nhớ nếu v0.3+ làm Zalo adapter.
+2. `git_brain.py` — memory dạng markdown vault sync 2 chiều qua git (kiểu Obsidian). Cross-check cho workspace memory của ta, nhưng concept generic, không cần code của repo này.
+
+Trạng thái: **watch-list, không phải dependency hay template.** Đáng chú ý: README của nó cũng credit Hermes Agent làm cảm hứng — củng cố lựa chọn nguồn của ta.
+
+---
+
 ## 4. Các mục còn [Unverified] / cần theo dõi
 
 1. Số contributor chính xác của OpenClaw và Hermes (api.github.com bị chặn qua proxy — có thể verify lại từ máy khác).
