@@ -73,6 +73,7 @@ Nhãn phase theo lộ trình: **[v0.1]** MVP → **[v0.2]** mở rộng cho agen
 | [`docs/harness-deep-comparison.md`](docs/harness-deep-comparison.md) | Verify từng claim về 3 repo (verdict + nguồn) + đánh giá vendorability |
 | [`docs/harness-master-plan.md`](docs/harness-master-plan.md) | Kế hoạch tổng quan: làm gì / học từ đâu / vì sao; lộ trình 4 phase + exit criteria; rủi ro |
 | [`docs/harness-architecture-design.md`](docs/harness-architecture-design.md) | Sơ đồ kiến trúc (component + sequence) + mô tả từng thành phần + bố trí dữ liệu |
+| [`docs/harness-execution-plan.md`](docs/harness-execution-plan.md) | Kế hoạch thực thi chi tiết: work package/task + dependency + DoD + hệ thống red gate RG-0→RG-3 |
 
 ## Quyết định đã chốt
 
