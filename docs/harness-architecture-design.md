@@ -188,6 +188,7 @@ sequenceDiagram
 | **Trách nhiệm** | Trái tim của harness. Cấu trúc theo pattern GoClaw V3 (clean-room từ `docs/01-agent-loop.md`): **setup một lần → vòng lặp bounded → finalize**. |
 | **Các stage** | **ContextStage** (1 lần/turn): ghép context *deterministic* — system prompt + workspace files + skills liên quan + N message gần nhất, tất cả trong token budget khai báo trước. **Think**: gọi Provider. **Prune** (mỗi vòng): tỉa context khi vượt budget — tool result cũ bị thay bằng tham chiếu. **Tool**: thực thi qua Security→Hooks→Registry. **Observe**: nhận result đã lọc vào context. **Checkpoint** (mỗi vòng): persist trạng thái vòng lặp xuống SQLite — kill process giữa chừng thì resume được. **FinalizeStage** (1 lần/turn): flush memory qua Review Gate, ghi session summary vào FTS store. |
 | **Bất biến** | Vòng lặp có trần cứng (mặc định 20 vòng **[Inference — số cần tune]**); mỗi vòng phát span; không stage nào gọi thẳng sandbox hay provider mà không qua lớp tương ứng. |
+| **Hủy (cancel)** | Ctrl+C / lệnh cancel dừng ở ranh giới stage; lệnh/container đang chạy bị kill sạch; checkpoint đánh dấu turn CANCELED — resume không bao giờ chạy lại tool có side-effect của turn bị hủy. |
 | **Vì sao pattern này** | Prune và Checkpoint là 2 stage đa số harness thiếu — giải trực tiếp bài token budget và failure recovery (tiêu chí xuyên suốt §4 tài liệu gốc). |
 
 ### 3.4 Provider Layer `[P1]`
@@ -213,6 +214,10 @@ Hai nửa, đúng sơ đồ gốc "Blocks / Filters":
 - Redact secret/PII (pattern + entropy scan **[Inference — kỹ thuật cụ thể chọn khi design chi tiết]**).
 - Prompt-injection scan trên tool result (web_fetch, file đọc từ ngoài) — result nghi vấn bị bọc cảnh báo hoặc chặn.
 
+**Secret Store `[P1]`** — thành phần nền cho mọi credential (provider key, VPN, DB connection string, SSH keyfile, search/image API key):
+- Interface duy nhất `secrets.get(name)`; backend: OS keyring hoặc file mã hóa (age/sops) **[Inference — chọn khi design chi tiết]**.
+- Bất biến: **secret không bao giờ đi vào context của model, span, log, hay checkpoint** — mọi consumer chỉ cầm *tên* secret; giá trị được inject tại điểm dùng cuối (provider client, VPN process env, DB driver). Có test scan tự động cho bất biến này (RG1-9).
+
 **Nguồn:** taxonomy approval 3 mức + hardline blocklist từ Hermes security docs; permission matrix từ GoClaw docs 09/23 (clean-room); OpenClaw THREAT-MODEL-ATLAS làm threat checklist (bài học ngược — default của họ là thứ ta phải đảo).
 
 ### 3.6 Tool Runtime
@@ -230,6 +235,7 @@ Hai nửa, đúng sơ đồ gốc "Blocks / Filters":
 | **Trách nhiệm** | Mọi lệnh exec chạy cô lập; stdout/stderr/exit thành structured result; timeout + resource limits. |
 | **Thành phần** | Vendor `tools/environments/`: `base.py` (ABC `BaseEnvironment` — subclass chỉ implement `_run_bash()` + `cleanup()`; base lo session lifecycle, wait/kill, CWD tracking), `docker.py` (backend chính — hardening sẵn: drop ALL caps, no-new-privileges, resource limits), `local.py` (dev only, bị Policy Gate chặn trong build production **[Inference — cần enforce bằng config]**), `ssh.py` `[P2]` (remote ops cho use-case local — chỉ đến host trong profile config, lệnh phân lớp qua Gate với hardline cấm xóa file, xem `harness-local-use-case.md` §3), `file_sync.py` (sync host↔container). Bỏ 3 backend còn lại (singularity/modal/daytona). |
 | **Network của container** | Mặc định `network=none`; tool cần mạng (web_fetch) đi qua proxy có egress whitelist — không cho container mở kết nối tuỳ ý. **[Inference — thiết kế chi tiết ở design doc sandbox]** |
+| **Project mounts** | Người dùng đăng ký project trong config (`projects: {tên: đường_dẫn}`); mỗi project root được mount read-write vào sandbox khi làm việc trên project đó. Read/write/exec chỉ được phép trong workspace root + project root đã đăng ký — path ngoài các root này bị deny (mở rộng path-traversal check của P1.3.3). |
 | **Vì sao vendor** | Module tự chứa duy nhất trong 3 repo vendor được nguyên vẹn (đã verify từng import); giữ ABC nên thêm Singularity sau này (khách cấm Docker) chỉ là thêm 1 file. |
 
 ### 3.8 Memory Subsystem
@@ -291,8 +297,10 @@ Hai nửa, đúng sơ đồ gốc "Blocks / Filters":
 │   ├── traces.db           # SQLite: span store
 │   └── scheduler.db        # SQLite: cron jobs + checkpoint vòng lặp
 ├── config/
-│   ├── harness.yaml        # provider, budget, sandbox, channels
+│   ├── harness.yaml        # provider, budget, sandbox, channels, projects: {tên: đường_dẫn}
+│   ├── pricing.yaml        # bảng giá provider cho cost ledger
 │   └── policy/*.yaml       # [P3] policy engine — mount read-only
+├── secrets/                # secret store (nếu backend file mã hóa) — không bao giờ vào context/span/log
 └── audit/
     └── audit-YYYY-MM.jsonl # [P3] append-only
 ```

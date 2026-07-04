@@ -20,16 +20,18 @@ Harness = phần hạ tầng bao quanh model: nhận yêu cầu → ghép contex
 Nhãn phase theo lộ trình: **[v0.1]** MVP → **[v0.2]** mở rộng cho agent → **[v0.3]** sản phẩm hóa.
 
 ### Lõi agent
-- **[v0.1] Agent loop bounded** — vòng lặp Think → Prune → Tool → Observe → Checkpoint có trần số vòng; **Prune** tỉa context mỗi vòng theo token budget; **Checkpoint** persist trạng thái để kill giữa chừng vẫn resume được.
+- **[v0.1] Agent loop bounded** — vòng lặp Think → Prune → Tool → Observe → Checkpoint có trần số vòng; **Prune** tỉa context mỗi vòng theo token budget; **Checkpoint** persist trạng thái để kill giữa chừng vẫn resume được. Hủy (Ctrl+C) dừng sạch ở ranh giới stage, kill container đang chạy, resume không lặp side-effect.
 - **[v0.1] Provider layer** — một interface thống nhất (chat/stream/tool-call/usage), 2 adapter đầu: Anthropic + OpenAI-compatible; đổi model/provider bằng config không sửa core; retry/backoff, failover theo lý do lỗi chuẩn hóa, prompt caching; token + cost ghi vào trace từng call.
 - **[v0.2] RPC code execution** — agent viết script Python gọi tool qua RPC, gom pipeline nhiều bước thành một lượt không tốn context; script chạy trong container, từng tool call vẫn xuyên Policy Gate.
 
 ### Tools & Sandbox
 - **[v0.1] Tool runtime** — registry tool có JSON schema + validation; lỗi trả về dạng agent-tự-sửa-được. Tool đầu: `exec`, `read_file`, `write_file`, `web_fetch` (qua egress whitelist).
+- **[v0.1] Đăng ký project** — khai báo các project trong config (`projects: {tên: đường_dẫn}`); file/exec chỉ được phép trong workspace + project root đã đăng ký, mount vào sandbox theo từng project.
 - **[v0.1] Docker sandbox** — mọi lệnh exec chạy trong container hardened (drop ALL capabilities, no-new-privileges, resource limits, timeout, mặc định không network); abstraction backend giữ sẵn đường thêm Singularity nếu khách cấm Docker daemon. *(vendor từ Hermes, MIT)*
 
 ### Security & Guardrails
-- **[v0.1] Policy Gate** — hardline deny-list (không override được) → allowlist per-deployment → approval 2 mức (manual/smart, không có chế độ YOLO) → mặc định DENY; fail-closed có test riêng.
+- **[v0.1] Policy Gate** — hardline deny-list (không override được) → allowlist per-deployment → approval 2 mức (manual/smart, không có chế độ YOLO) → mặc định DENY; fail-closed có test riêng. Approval trong run không giám sát (cron) có timeout — hết hạn thì job fail sạch, không treo, không auto-approve.
+- **[v0.1] Secret store** — mọi credential (provider key, VPN, DB connection string, SSH key, search/image API key) sau một interface duy nhất; secret không bao giờ vào context của model, span, log hay checkpoint — có test scan tự động cho bất biến này.
 - **[v0.1] Result Filters** — redact secret/PII và quét prompt-injection trên mọi tool result trước khi vào context.
 - **[v0.3] Policy engine policy-as-config** — rule YAML (điều kiện trên tool/args/session/phân loại dữ liệu → allow/deny/approve/redact), mount read-only; Gate v0.1 chuyển sang đọc engine này cùng interface.
 - **[v0.3] Immutable core** — agent có thể *đề xuất* sửa style/capabilities qua review gate nhưng không bao giờ sửa được identity, deny-list gốc, policy file.
@@ -94,7 +96,9 @@ Use-case đầu tiên: trợ lý DevOps cá nhân chạy local — quản lý pr
 
 ## Quyết định đã chốt
 
-Python ≥3.11 · SQLite (v0.1–0.2) · Docker sandbox · single-tenant · chuẩn skills agentskills.io · clean-room bắt buộc với GoClaw (chỉ đọc docs, không đọc code Go).
+Python ≥3.11 · SQLite (v0.1–0.2) · Docker sandbox · single-tenant · chuẩn skills agentskills.io · clean-room bắt buộc với GoClaw (chỉ đọc docs, không đọc code Go) · platform: Linux-first, Windows qua WSL2, macOS best-effort (verify môi trường thật ở P0.5.1) · tiến độ đo bằng gate, không ràng buộc thời gian/số dev.
+
+Chất lượng hành vi agent được giữ bằng **eval suite golden tasks** (v0.2): bộ kịch bản chuẩn chấm tự động, bắt buộc chạy khi sửa system prompt/skill/model — hành vi trôi là thấy ngay trong CI.
 
 ## License lưu ý
 

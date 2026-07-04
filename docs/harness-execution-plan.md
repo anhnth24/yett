@@ -29,6 +29,7 @@ Bên cạnh red gate theo chặng có **guard thường trực (AG — always-on
 | AG-5 | Checklist RPC security (từ Hermes issues #41/#7071) là test suite, không phải tài liệu | P2.5 |
 | AG-6 | DB hardline suite: mọi DML/DDL (kể cả obfuscated/multi-statement/CTE) bị chặn; parser fail → deny | P2.7 |
 | AG-7 | Remote-deletion hardline suite: mọi lệnh xóa file OS qua SSH/VPN (kể cả né tránh: xargs/busybox/subshell/alias) bị chặn tuyệt đối, không có đường approval | P2.6 |
+| AG-8 | Eval suite golden tasks: bộ kịch bản chuẩn chấm tự động, chạy khi sửa system prompt / skill bundled / đổi model default — hành vi trôi là thấy ngay | P2.9 |
 
 ---
 
@@ -53,7 +54,7 @@ flowchart LR
     RG4 -.->|fail| P4
 ```
 
-**[Inference]** Tổng ~30 tuần (~7.5 tháng) đến nghiệm thu, với 2–3 dev; con số calibrate lại sau RG-1. (Phase 2 kéo dài 6→8 tuần khi thêm use-case local — WP2.6/WP2.7.)
+**Ghi chú tiến độ (quyết định 07/2026):** thời gian và số dev **không phải ràng buộc** của plan này — tiến độ đo bằng pass gate, không bằng lịch. Các con số tuần chỉ để hình dung khối lượng tương đối giữa các phase **[Inference]**, không phải cam kết; không hạ tiêu chí gate để giữ mốc thời gian.
 
 ---
 
@@ -73,6 +74,8 @@ flowchart LR
 | P0.3.1 | Skeleton Python: layout package theo kiến trúc §3, pyproject.toml pin exact deps, pre-commit | — | `pip install -e .` + import mọi package OK |
 | P0.3.2 | CI: lint + test + build container + AG-3 | P0.3.1 | CI xanh; PR thử có import lậu từ vendor bị chặn |
 | P0.4.1 | Threat model v0 (checklist từ OpenClaw THREAT-MODEL-ATLAS + exposure-runbook, áp lên posture của ta) | — | Tài liệu 1–2 trang, được review, liệt kê threat → control tương ứng trong kiến trúc |
+| P0.5.1 | **Chốt platform:** Linux-first; Windows hỗ trợ qua WSL2; macOS best-effort **[Inference — default đề xuất]**. Verify tổ hợp trên máy người dùng thật: Docker (Desktop/WSL2) + VPN client (FortiClient/openfortivpn) + SSH routing khi VPN bật | — | Checklist môi trường chạy pass trên máy người dùng; ghi thành `docs/platform-support.md` |
+| P0.5.2 | Chốt tên sản phẩm (đang là placeholder "harness") — ảnh hưởng tên package Python, CLI, config dir | trước P0.3.1 | Quyết định ghi vào README |
 
 ### 🔴 RG-0 — Legal & Foundation Gate
 
@@ -118,6 +121,7 @@ flowchart TB
 - P1.4.2 Hardline deny-list + allowlist config + approval manual qua CLI — DoD: bảng test case cho từng rule
 - P1.4.3 **Fail-closed test suite (AG-1):** Gate raise exception → deny; Gate timeout → deny; config policy hỏng → process từ chối khởi động
 - P1.4.4 Result Filters: redact secret (pattern + entropy) + đánh dấu nguồn untrusted — DoD: corpus test secret thật-giả (AG-4)
+- P1.4.5 **Secret store** (dependency của provider key v0.1 và toàn bộ WP2.6/2.7/2.8): interface `secrets.get(name)`; backend OS keyring hoặc file mã hóa (age/sops) **[Inference — chọn khi design]**; mọi consumer (provider, vpn, db, search) chỉ cầm tên secret — DoD: test secret không xuất hiện trong context/span/log/checkpoint ở bất kỳ WP nào dùng nó
 
 **WP1.1 — Provider Layer** (spec P0.1.2) — tuần 1–2
 - P1.1.1 Interface + response chuẩn hoá + usage — DoD: contract test chạy được trên cả 2 adapter
@@ -131,6 +135,7 @@ flowchart TB
 - P1.3.3 Tools `read_file`/`write_file` (giới hạn trong workspace root) — DoD: path-traversal test
 - P1.3.4 Tool `web_fetch` qua egress whitelist — DoD: URL ngoài whitelist bị Gate chặn (không phải fetch rồi bỏ)
 - P1.3.5 **Wiring bất biến:** mọi execute đi `Gate → Registry → Sandbox → Filters` — DoD: test kiến trúc (không import nào từ core loop thẳng đến sandbox — kiểm bằng import-linter)
+- P1.3.6 **Đăng ký project:** config `projects: {tên: đường_dẫn}` — read/write/exec chỉ trong workspace root + các project root đã đăng ký, mount read-write vào sandbox theo từng project; S1 đọc git log từ đây — DoD: path ngoài mọi root đăng ký bị deny (path-traversal test mở rộng); thêm/bớt project không cần restart
 
 **WP1.2 — Core Loop** (spec P0.1.4) — tuần 3–5
 - P1.2.1 ContextStage: ghép context deterministic + token budget — DoD: cùng input → cùng context (snapshot test)
@@ -138,6 +143,7 @@ flowchart TB
 - P1.2.3 Prune: tỉa tool result cũ khi vượt budget — DoD: turn dài không vượt budget (test synthetic)
 - P1.2.4 Checkpoint + resume — DoD: `kill -9` giữa vòng lặp → resume đúng vòng, không chạy lại tool đã chạy (idempotency)
 - P1.2.5 FinalizeStage: đề xuất memory → staging — DoD: không có đường ghi thẳng MEMORY.md
+- P1.2.6 **Ngữ nghĩa hủy (cancel/interrupt):** Ctrl+C / lệnh cancel dừng ở ranh giới stage; container/lệnh đang chạy bị kill sạch; checkpoint đánh dấu turn CANCELED — resume không bao giờ chạy lại tool có side-effect của turn bị hủy — DoD: test hủy ở từng stage (đang Think, đang Tool, đang chờ approval) đều sạch
 
 **WP1.5 — Working Memory** — tuần 3–4
 - P1.5.1 Loader bộ file workspace theo spec OpenClaw + budget truncation — DoD: bảng thứ tự ưu tiên truncate có test
@@ -159,6 +165,8 @@ flowchart TB
 | RG1-6 | Context deterministic: chạy lại cùng input → cùng context bytes | Snapshot test |
 | RG1-7 | Đổi provider Anthropic ↔ OpenAI-compatible chỉ bằng config, demo chạy lại pass | Demo 2 lần chạy |
 | RG1-8 | Không đường ghi trực tiếp MEMORY.md từ agent (import-linter + test) | CI |
+| RG1-9 | Không secret nào (provider key) xuất hiện trong context/span/log/checkpoint của demo end-to-end | Scan tự động trên artifact demo |
+| RG1-10 | Hủy giữa turn (đang Tool + đang chờ approval) → dừng sạch, container bị kill, resume không lặp side-effect | Test tự động |
 
 **Người duyệt:** tech lead + 1 người không thuộc team dev (đóng vai đánh giá an ninh). **Fail RG1-1 hoặc RG1-2 lần 2 → dừng dự án, review lại kiến trúc** — đây chính là định nghĩa "làm được" của toàn bộ dự án.
 
@@ -186,8 +194,9 @@ flowchart TB
 - P2.3.2 Tool `session_search` — DoD: test tiếng Việt có dấu qua trigram; kết quả là message gốc
 
 **WP2.4 — Scheduler** — tuần 4
-- P2.4.1 Cron 3 syntax + persist + chống overlap — DoD: restart giữa chừng không mất lịch; job chồng bị skip + span event
+- P2.4.1 Cron 3 syntax + persist + chống overlap; timezone khai báo tường minh trong config (không mặc định theo máy) — DoD: restart giữa chừng không mất lịch; job chồng bị skip + span event; test đổi TZ
 - P2.4.2 Heartbeat + HEARTBEAT_OK + liveness alert — DoD: agent treo giả lập → phát hiện trong ≤2 chu kỳ
+- P2.4.3 **Approval trong run không giám sát:** approval pending trong scheduled run có timeout khai báo → hết hạn thì job fail sạch + audit lý do (không treo vô hạn, không auto-approve); `[P3]` đẩy approval request qua channel — DoD: cron cần approval lúc người dùng vắng → job kết thúc đúng cách, trace đầy đủ
 
 **WP2.5 — RPC code execution** — tuần 4–6 (task rủi ro nhất phase)
 - P2.5.1 Sinh stub typed từ Registry — DoD: stub compile, gọi thử round-trip
@@ -214,6 +223,10 @@ flowchart TB
 - P2.8.1 Tool `web_search` (API key trong secret store; kết quả fetch qua egress whitelist) — DoD: key không vào context/span; domain ngoài whitelist bị chặn; mỗi query ghi cost span vào ledger (P1.6.4)
 - P2.8.2 Skill bundled `research` (search → fetch → tổng hợp có trích dẫn vào workspace) + `report` (S1) + `content-writer` (S7) — DoD: mỗi skill demo được end-to-end
 
+**WP2.9 — Eval suite (golden tasks)** — tuần 8, chạy song song WP2.8
+- P2.9.1 Bộ 10–20 golden task phủ S1–S7 (input chuẩn + tiêu chí pass chấm tự động: đúng tool được gọi, Gate verdict đúng, output chứa yếu tố bắt buộc) — DoD: suite chạy trong CI, có báo cáo pass/fail từng task
+- P2.9.2 Kích hoạt AG-8: bắt buộc chạy khi diff chạm system prompt / skill bundled / model default — DoD: PR sửa prompt mà không chạy eval bị block
+
 ### 🔴 RG-2 — Gate "agent dùng được thật"
 
 | # | Tiêu chí | Bằng chứng |
@@ -227,6 +240,7 @@ flowchart TB
 | RG2-7 | `session_search` trả kết quả liên quan trên dữ liệu dogfood ≥2 tuần (đánh giá mù bởi người không làm WP2.3) | Biên bản đánh giá |
 | RG2-8 | **DB hardline:** suite AG-6 xanh; demo sống: yêu cầu agent "sửa trạng thái đơn hàng trong DB" → Gate chặn, agent trả về yêu cầu approval kèm nguyên văn SQL; approve một câu không mở câu khác | CI + demo |
 | RG2-9 | **Remote-deletion hardline:** suite AG-7 xanh; demo sống: yêu cầu agent "xóa file log cũ trên UAT" → deny tuyệt đối kể cả khi người dùng nói "cứ xóa đi" trong chat | CI + demo |
+| RG2-10 | Eval suite golden tasks (AG-8) xanh trên bản RG-2; approval-timeout trong scheduled run demo đúng (P2.4.3) | CI + trace |
 
 ---
 
@@ -359,6 +373,12 @@ Sản phẩm chưa "hoàn thành" khi mới pass release gate — hoàn thành =
 | Viết content (skill) | P2.8.2 | RG2-1 (S7) |
 | Subagent delegation 1 cấp (researcher/writer/illustrator) | WP3.6 | RG3-9 |
 | Tạo ảnh (image_gen) | P3.6.5 | RG3-9 (S8) |
+| Secret store (key/credential không vào context) | P1.4.5 | RG1-9 |
+| Đăng ký project (multi-project root + mount) | P1.3.6 | RG1 (path test), RG2-1 (S1/S2) |
+| Hủy/interrupt sạch giữa turn | P1.2.6 | RG1-10 |
+| Approval timeout trong run không giám sát | P2.4.3 | RG2-10 |
+| Eval suite golden tasks | WP2.9 | RG2-10, AG-8 |
+| Platform: Linux-first, Windows qua WSL2 | P0.5.1 | RG-0 (checklist môi trường) |
 | No-egress (cam kết #1) | xuyên suốt | AG-2, RG1-1, RG4-5 |
 | Fail-closed (cam kết #2) | xuyên suốt | AG-1, RG1-2, RG3-3 |
 | Non-goals (Zalo Personal, WeChat, multi-tenant, self-evolution…) | không có WP — chủ đích | RG3-8 xác nhận không lọt scope |
@@ -370,8 +390,8 @@ Sản phẩm chưa "hoàn thành" khi mới pass release gate — hoàn thành =
 | Gate | Sau | Câu hỏi gate trả lời | Số tiêu chí | Người duyệt | Fail 2 lần → |
 |---|---|---|---|---|---|
 | RG-0 | Phase 0 | Nền pháp lý + móng kỹ thuật sạch chưa? | 6 | Lead + Legal | Dừng, sửa quy trình trước khi code |
-| RG-1 | Phase 1 | 2 cổng sống/chết có bằng chứng chưa? | 8 | Lead + reviewer độc lập | **Dừng dự án, review kiến trúc** |
-| RG-2 | Phase 2 | Agent làm được việc thật (5 kịch bản local), an toàn không thoái lui? | 9 | Lead | Cắt scope P3, quay lại củng cố |
+| RG-1 | Phase 1 | 2 cổng sống/chết có bằng chứng chưa? | 10 | Lead + reviewer độc lập | **Dừng dự án, review kiến trúc** |
+| RG-2 | Phase 2 | Agent làm được việc thật (kịch bản local S1–S7), an toàn không thoái lui? | 10 | Lead | Cắt scope P3, quay lại củng cố |
 | RG-3 | Phase 3 | Giao cho khách được chưa? | 9 | Lead + Legal + Ops | Hoãn release, không hạ tiêu chí |
 | RG-4 | Phase 4 | Khách nghiệm thu chưa? (= hoàn thành A→Z) | 6 | Khách + Lead | Kéo dài hypercare, xử lý nguyên nhân gốc |
 
