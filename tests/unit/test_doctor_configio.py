@@ -16,9 +16,11 @@ workspace_root: ./workspace
 """
 
 
-def test_doctor_runs_and_reports() -> None:
+def test_doctor_runs_and_reports(tmp_path: Path) -> None:
     lines: list[str] = []
-    rc = run_doctor(emit=lines.append)
+    # config_path cô lập: doctor đọc config thật của máy dev (backend=docker → rc phụ thuộc
+    # daemon đang chạy) nên test phải trỏ vào path không tồn tại để hermetic.
+    rc = run_doctor(emit=lines.append, config_path=tmp_path / "no-config.yaml")
     # Python luôn có (ta đang chạy) → 0 required thiếu
     assert rc == 0
     joined = "\n".join(lines)

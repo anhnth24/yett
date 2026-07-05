@@ -28,6 +28,8 @@ jobs:
       - name: Import-linter (bất biến kiến trúc — AG-3)
         env:
           PYTHONPATH: src
+          # Windows: import-linter đọc source bằng codec mặc định (charmap) → crash trên file UTF-8
+          PYTHONUTF8: "1"
         run: lint-imports
       - name: Pytest
         run: pytest -q
