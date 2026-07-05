@@ -5,9 +5,11 @@ KHÔNG nằm trong config, KHÔNG vào context/span/log. Đơn giản hơn quả
 
 [P1-13] POSIX: chmod 600/700 (owner-only rwx). Windows: os.chmod không map sang DACL
 NTFS (no-op) — dùng `icacls` (subprocess, không thêm dep pywin32) để đặt DACL owner-only
-thật. Nếu không đặt được ACL (icacls lỗi/thiếu) → CẢNH BÁO TO qua log + stderr; secret
-vẫn được ghi (không chặn wizard) nhưng người dùng phải biết quyền file có thể không đúng
-mức — không bao giờ nuốt lỗi im lặng (`except OSError: pass` cũ đã bỏ).
+thật. LƯU Ý: `/inheritance:r` chỉ bỏ ACE KẾ THỪA; ACE explicit có sẵn (vd `Everyone:(F)`
+trên thư mục tmp mở) vẫn sống sót — nên sau khi grant owner phải liệt kê DACL thật và
+`/remove` mọi principal khác owner, rồi verify lại. Nếu không đặt được ACL (icacls lỗi/
+thiếu, ACE lạ không gỡ được) → CẢNH BÁO TO qua log + stderr; secret vẫn được ghi (không
+chặn wizard) — không bao giờ nuốt lỗi im lặng (`except OSError: pass` cũ đã bỏ).
 """
 
 from __future__ import annotations
@@ -34,9 +36,10 @@ def _warn_permission_failure(path: Path, detail: str) -> None:
     print(msg, file=sys.stderr)
 
 
-def _current_user_sid() -> str | None:
-    """Lấy SID user hiện tại qua `whoami /user` (tránh nhập nhằng domain\\user khi tên
-    máy trùng tên user — icacls có thể resolve sai sang máy thay vì user)."""
+def _current_user() -> tuple[str, str] | None:
+    """Lấy (tên account `domain\\user`, SID) của user hiện tại qua `whoami /user`
+    (tránh nhập nhằng domain\\user khi tên máy trùng tên user — icacls có thể resolve
+    sai sang máy thay vì user; tên dùng để so khớp ACE trong output icacls)."""
     try:
         result = subprocess.run(
             ["whoami", "/user", "/fo", "csv", "/nh"],
@@ -51,27 +54,57 @@ def _current_user_sid() -> str | None:
     if not line:
         return None
     fields = [f.strip().strip('"') for f in line.split(",")]
-    if len(fields) < 2 or not fields[-1].startswith("S-1-"):
+    if len(fields) < 2 or not fields[0] or not fields[-1].startswith("S-1-"):
         return None
-    return fields[-1]
+    return fields[0], fields[-1]
+
+
+def _icacls_principals(path: Path, icacls_output: str) -> list[str]:
+    """Parse tên principal từ output `icacls <path>` — mỗi ACE một dòng dạng
+    `TÊN:(quyền)`; dòng đầu có prefix path, dòng tổng kết không chứa `:(`."""
+    text = icacls_output.replace(str(path), "", 1)
+    principals: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if ":(" in line:
+            principals.append(line.split(":(", 1)[0])
+    return principals
 
 
 def _restrict_windows_acl(path: Path) -> None:
-    """Đặt DACL owner-only bằng icacls: bỏ kế thừa ACL từ cha, chỉ grant Full Control
-    cho SID user hiện tại. Không dùng pywin32 (không thêm dep — theo Risk Assessment)."""
-    sid = _current_user_sid()
-    if sid is None:
+    """Đặt DACL owner-only bằng icacls, 4 bước fail-loud:
+    1) `/inheritance:r` (bỏ ACE kế thừa) + 2) `/grant:r *SID:F` (owner Full Control).
+    3) `/inheritance:r` KHÔNG xoá ACE explicit có sẵn (Everyone/BUILTIN\\Users/... trên
+       thư mục mở) → liệt kê DACL thật, `/remove` từng principal khác owner (dùng đúng
+       tên icacls in ra nên không phụ thuộc locale).
+    4) Verify lại: còn ACE nào không phải owner → cảnh báo to (không nuốt).
+    Không dùng pywin32 (không thêm dep — theo Risk Assessment)."""
+    user = _current_user()
+    if user is None:
         _warn_permission_failure(path, "không lấy được SID user hiện tại (whoami /user lỗi)")
         return
+
+    def _icacls(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["icacls", str(path), *args],
+            capture_output=True, text=True, check=True, timeout=10,
+        )
+
+    account_name, sid = user
     try:
-        subprocess.run(
-            ["icacls", str(path), "/inheritance:r"],
-            capture_output=True, text=True, check=True, timeout=10,
-        )
-        subprocess.run(
-            ["icacls", str(path), "/grant:r", f"*{sid}:F"],
-            capture_output=True, text=True, check=True, timeout=10,
-        )
+        _icacls("/inheritance:r")
+        _icacls("/grant:r", f"*{sid}:F")
+        for principal in _icacls_principals(path, _icacls().stdout):
+            if principal.lower() != account_name.lower():
+                _icacls("/remove", principal)
+        leftover = [
+            p for p in _icacls_principals(path, _icacls().stdout)
+            if p.lower() != account_name.lower()
+        ]
+        if leftover:
+            _warn_permission_failure(
+                path, f"ACE còn lại cho principal khác owner (không gỡ được): {leftover}"
+            )
     except (OSError, subprocess.SubprocessError) as e:
         stderr = e.stderr if isinstance(e, subprocess.CalledProcessError) and e.stderr else str(e)
         _warn_permission_failure(path, f"icacls thất bại: {stderr}")

@@ -247,13 +247,46 @@ def test_docker_sandbox_base_flags_include_all_hardening() -> None:
     assert "--security-opt" in flags and "no-new-privileges" in flags
     assert "--read-only" in flags
     assert flags[flags.index("--tmpfs") + 1].startswith("/tmp:")
-    assert flags[flags.index("--user") + 1] == "65534:65534"
+    # --user: non-root luôn luôn; giá trị cụ thể phụ thuộc host (test riêng bên dưới)
+    user_val = flags[flags.index("--user") + 1]
+    assert user_val and not user_val.startswith("0:"), f"container không được chạy root: {user_val}"
     assert flags[flags.index("--pids-limit") + 1] == "128"
     assert flags[flags.index("--memory") + 1] == "1g"
     assert flags[flags.index("--cpus") + 1] == "1.5"
     assert "-v" in flags
     v_idx = flags.index("-v")
     assert flags[v_idx + 1] == "/host/ws:/workspace:rw"
+
+
+def test_docker_sandbox_user_maps_host_uid_gid_on_posix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bind mount :rw giữ nguyên quyền host trên Linux/macOS — container phải chạy đúng
+    UID/GID host, nếu không (65534 nobody) exec KHÔNG ghi được workspace do user sở hữu."""
+    import yett.sandbox.docker as docker_mod
+
+    monkeypatch.setattr(docker_mod.os, "getuid", lambda: 1000, raising=False)
+    monkeypatch.setattr(docker_mod.os, "getgid", lambda: 1000, raising=False)
+    flags = DockerSandbox(SandboxCfg(backend="docker"))._base_flags()
+    assert flags[flags.index("--user") + 1] == "1000:1000"
+
+
+def test_docker_sandbox_user_falls_back_to_nobody_for_root_and_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Host chạy root (uid 0) → ép 65534 giữ lời hứa non-root; Windows host (không có
+    os.getuid) → 65534 (Docker Desktop tự map quyền file-sharing)."""
+    import yett.sandbox.docker as docker_mod
+
+    monkeypatch.setattr(docker_mod.os, "getuid", lambda: 0, raising=False)
+    monkeypatch.setattr(docker_mod.os, "getgid", lambda: 0, raising=False)
+    flags_root = DockerSandbox(SandboxCfg(backend="docker"))._base_flags()
+    assert flags_root[flags_root.index("--user") + 1] == "65534:65534"
+
+    monkeypatch.delattr(docker_mod.os, "getuid", raising=False)
+    monkeypatch.delattr(docker_mod.os, "getgid", raising=False)
+    flags_win = DockerSandbox(SandboxCfg(backend="docker"))._base_flags()
+    assert flags_win[flags_win.index("--user") + 1] == "65534:65534"
 
 
 def test_docker_sandbox_network_reflects_cfg_not_hardcoded_ternary() -> None:

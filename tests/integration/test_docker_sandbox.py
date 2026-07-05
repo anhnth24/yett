@@ -71,6 +71,16 @@ async def test_exec_runs_in_container_with_workspace_mounted(tmp_path: Path) -> 
         )
         assert not res2.is_error
         assert "ghi từ host" in res2.content
+        # workspace phải GHI được từ trong container (mount :rw + --user khớp quyền host —
+        # 65534 nobody trên Linux native sẽ fail ở đây) và host thấy được file vừa ghi
+        res3 = await exec_tool.run(
+            {"cmd": "echo ghi-tu-container > from_container.txt", "cwd": str(tmp_path / "ws")},
+            _Ctx(),
+        )
+        assert not res3.is_error, f"container không ghi được workspace: {res3.content}"
+        assert (tmp_path / "ws" / "from_container.txt").read_text(
+            encoding="utf-8"
+        ).strip() == "ghi-tu-container"
     finally:
         app.close()
 

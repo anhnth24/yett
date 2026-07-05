@@ -63,6 +63,37 @@ def test_file_secret_store(tmp_path: Path) -> None:
         assert stat.S_IMODE(mode) == 0o600
 
 
+def test_file_secret_store_strips_preexisting_broad_acl(tmp_path: Path) -> None:
+    """[P1-13 regression] `/inheritance:r` chỉ bỏ ACE KẾ THỪA — ACE explicit có sẵn
+    (vd Everyone:(F) trên thư mục tmp mở) vẫn sống sót nếu chỉ /grant owner. Store phải
+    chủ động gỡ mọi principal khác owner rồi verify. Grant bằng SID `*S-1-1-0` (Everyone)
+    để không phụ thuộc locale."""
+    if sys.platform != "win32":
+        pytest.skip("Windows DACL only")
+    secrets_dir = tmp_path / "secrets"
+    secrets_dir.mkdir()
+    leaked = secrets_dir / "llm_key"
+    leaked.write_text("old", encoding="utf-8")
+    subprocess.run(
+        ["icacls", str(leaked), "/grant", "*S-1-1-0:F"],
+        capture_output=True, text=True, check=True,
+    )
+    before = subprocess.run(
+        ["icacls", str(leaked)], capture_output=True, text=True, check=True,
+    ).stdout
+    assert "S-1-1-0" in before or "Everyone" in before, f"sanity: chưa gắn được ACE rộng: {before}"
+
+    store = FileSecretStore(secrets_dir)
+    store.set("llm_key", "abc123")
+
+    after = subprocess.run(
+        ["icacls", str(leaked)], capture_output=True, text=True, check=True,
+    ).stdout
+    for leaked_group in ("Everyone", "S-1-1-0", "BUILTIN\\Users", "Authenticated Users"):
+        assert leaked_group not in after, f"ACL vẫn cho phép {leaked_group}: {after}"
+    assert ":(F)" in after, f"không thấy Full Control owner: {after}"
+
+
 def test_file_secret_store_acl_failure_warns_loudly_not_silent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
 ) -> None:

@@ -3,9 +3,10 @@
 Bọc `docker run` qua CLI với hardening flags CỨNG (không cấu hình thêm ngoài SandboxCfg):
 `--network` (mặc định "none" — không egress), `--cap-drop ALL`, `--security-opt
 no-new-privileges`, `--read-only` rootfs + `--tmpfs /tmp` cho scratch (ghi tạm vì rootfs
-read-only), `--user` non-root (65534:65534 = nobody:nogroup), `--pids-limit`, `--memory`/
-`--cpus` theo SandboxCfg, `--rm`. Timeout xử lý ở tầng orchestration (asyncio.wait_for +
-kill tiến trình khi quá hạn), không phải flag `docker run`.
+read-only), `--user` non-root (POSIX: UID/GID host thật để ghi được bind mount :rw;
+Windows host: 65534 nobody — Docker Desktop tự map quyền file-sharing), `--pids-limit`,
+`--memory`/`--cpus` theo SandboxCfg, `--rm`. Timeout xử lý ở tầng orchestration
+(asyncio.wait_for + kill tiến trình khi quá hạn), không phải flag `docker run`.
 
 Mount workspace/project (rw) do App tính & truyền vào qua `mounts` (host path -> container
 path). `-w` (cwd) nhận thẳng path container đã map sẵn ở phía gọi (xem `app.py`); DockerSandbox
@@ -18,6 +19,7 @@ interface `Sandbox` giữ nguyên.)
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import subprocess
 
@@ -58,6 +60,22 @@ def probe_docker() -> None:
         )
 
 
+def _container_user() -> str:
+    """UID:GID chạy trong container. Linux/macOS native: bind mount :rw giữ nguyên quyền
+    host — 65534 (nobody) sẽ KHÔNG ghi được workspace do user host sở hữu, nên dùng đúng
+    UID/GID host. Windows host không có os.getuid (Docker Desktop/WSL2 tự map quyền qua
+    lớp file-sharing) → giữ 65534:65534 non-root. Host chạy bằng root (uid 0) → vẫn ép
+    65534 để giữ lời hứa non-root trong container."""
+    getuid = getattr(os, "getuid", None)
+    getgid = getattr(os, "getgid", None)
+    if getuid is None or getgid is None:
+        return "65534:65534"
+    uid, gid = getuid(), getgid()
+    if uid == 0:
+        return "65534:65534"
+    return f"{uid}:{gid}"
+
+
 class DockerSandbox:
     def __init__(
         self, cfg: SandboxCfg, image: str = "python:3.11-slim", mounts: dict[str, str] | None = None
@@ -74,7 +92,7 @@ class DockerSandbox:
             "--security-opt", "no-new-privileges",
             "--read-only",
             "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m",
-            "--user", "65534:65534",
+            "--user", _container_user(),
             "--pids-limit", "128",
             "--memory", self._cfg.mem_limit,
             "--cpus", str(self._cfg.cpus),
