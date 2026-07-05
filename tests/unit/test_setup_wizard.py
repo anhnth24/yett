@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 from yett.secrets.file_store import FileSecretStore
@@ -35,6 +37,12 @@ def test_find_provider() -> None:
     assert find_provider("khong-ton-tai") is None
 
 
+@pytest.mark.xfail(
+    sys.platform == "win32",
+    strict=True,
+    reason="os.chmod(0o600) là no-op trên Windows (không có POSIX file mode) — P1-13, "
+    "Phase 5 sẽ thay bằng ACL Windows thật rồi gỡ marker.",
+)
 def test_file_secret_store(tmp_path: Path) -> None:
     store = FileSecretStore(tmp_path / "secrets")
     store.set("llm_key", "abc123")

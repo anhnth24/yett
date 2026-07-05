@@ -4,7 +4,7 @@
 >
 > **Tên:** *yett* = cổng lưới sắt của thành lũy, loại thả xuống đóng kín theo mặc định — đúng triết lý fail-closed của Policy Gate (mọi tool call qua một cổng, mặc định từ chối). Lệnh CLI: `yett`.
 >
-> **Trạng thái:** Bộ khung code Phase 1–3 đã implement với test đầy đủ (161 test xanh, mypy strict, ruff, import-linter). Xem [Trạng thái implement](#trạng-thái-implement) bên dưới.
+> **Trạng thái:** Bộ khung code Phase 1–3 đã implement, 227 test collect được (224 xanh, 2 `xfail` lộ bug đã biết chờ vá, 1 skip khi máy không có Docker daemon), mypy strict, ruff, import-linter. Một số hạng mục mới chỉ **kiểm chứng qua fake/logic đơn lẻ, chưa verify end-to-end** — xem cột "Kiểm chứng" trong [Trạng thái implement](#trạng-thái-implement) bên dưới.
 
 ## Chạy thử nhanh
 
@@ -15,7 +15,7 @@ yett setup           # wizard cài đặt từng bước: provider → model →
 yett serve --open    # 🖥️ mở giao diện chat WEB (localhost) — giống "app"
 yett chat "báo cáo tiến độ tuần này của các project"   # hoặc dùng CLI
 yett usage --by provider --state state
-pytest -q            # 183 test
+pytest -q            # 227 test (224 xanh, 2 xfail biết trước, 1 skip nếu thiếu Docker daemon)
 ```
 
 **Muốn dùng như một app Windows:** `yett serve --open` mở UI chat trong trình duyệt; hoặc đóng gói `yett.exe` (double-click chạy, không cần Python) — xem [`packaging/BUILD_EXE.md`](packaging/BUILD_EXE.md).
@@ -27,31 +27,35 @@ Chọn 1 trong 10+ model top (GLM 5.2, MiniMax M3, DeepSeek, Gemini, GPT-5.5, Cl
 
 Đã có code chạy được + test cho lõi cả 3 phase. Phần cần tài nguyên ngoài (LLM API thật, Docker daemon, SSH/VPN tới server thật, Telegram) được thiết kế qua interface + backend inject được, và test bằng fake/offline — đúng nguyên tắc no-egress trong test.
 
-| Khối | Trạng thái | Test |
+**Chú giải cột "Kiểm chứng":** ✅ e2e = có test lắp ráp thật (App/loop thật, không chỉ gọi hàm lẻ). 🟡 fake = logic đúng khi chạy qua `FakeProvider`/stand-in, **chưa** verify với backend thật (provider/API/daemon thật) — có thể còn lệch khi nối thật. ❌ chưa wire = cấu hình cho phép nhưng đường chạy thật (`App`/`yett chat`) chưa thực sự dùng tới; có test `xfail(strict=True)` lộ đúng bug, sẽ gỡ marker khi vá xong.
+
+| Khối | Kiểm chứng | Test |
 |---|---|---|
-| Policy Gate fail-closed + deny-list + allowlist + filters | ✅ | `test_security_basic`, `test_filters` |
-| **Hardline cấm xóa file OS qua SSH/VPN** (cmdguard) | ✅ | `test_cmdguard` (45 case né tránh) |
-| **Hardline DB read-only** (sqlguard) | ✅ | `test_sqlguard` (26 case) |
-| Provider interface + failover + FakeProvider | ✅ | `test_provider_failover` |
-| Tool registry + wiring bất biến + builtin tools + project scope | ✅ | `test_tools_wiring` |
-| Sandbox local (test) + docker (hardened) | ✅ (docker cần daemon) | `test_tools_wiring` |
-| Agent loop: bounded + prune + checkpoint/resume + cancel | ✅ | `test_core_loop` |
-| Tracing + span store + cost ledger | ✅ | `test_obs` |
-| Memory: workspace + review gate + FTS5 (tiếng Việt) | ✅ | `test_memory` |
-| Remote ops: host profile + ssh_exec + log_read + vpn | ✅ (backend inject) | `test_remote_db` |
-| DB tools: db_query/db_config read-only 4 lớp | ✅ (executor inject) | `test_remote_db` |
-| Skills: loader + disclosure + lint + review gate **(wired vào `yett chat`)** | ✅ | `test_skills_hooks_sched`, `test_group2_wired` |
-| Hooks: mutate/deny + cách ly lỗi **(wired)** | ✅ | `test_skills_hooks_sched` |
-| Scheduler: cron + overlap + unattended approval timeout | ✅ | `test_skills_hooks_sched` |
-| Eval suite golden tasks + web_search | ✅ | `test_eval_websearch` |
-| Policy engine (policy-as-config, drop-in) + immutable core | ✅ | `test_phase3` |
-| Audit hash-chain + retention + channel gating + analytics | ✅ | `test_phase3`, `test_phase3_extra` |
-| Subagent delegation 1 cấp (không leo thang quyền) **(wired)** | ✅ | `test_phase3`, `test_group2_wired` |
-| **DB query read-only (sqlite thật + lazy postgres/mysql), wired** | ✅ | `test_group2_wired` |
-| RPC code execution (broker + caps + secret strip) | ✅ (in-process; production dùng socket-in-container) | `test_phase3_extra` |
-| **Adapter LLM thật (OpenAI-compatible: GLM 5.2, MiniMax M3...)** | ✅ (cần API key để gọi mạng thật) | `test_openai_compat` |
-| `yett chat` nối config thật + provider factory + secret store | ✅ | `test_openai_compat`, verify build_app |
-| Packaging: config mẫu, pricing, bundled skills, subagent defs, deploy+runbook, backup/restore | ✅ | — |
+| Policy Gate fail-closed + deny-list + allowlist + filters | ✅ e2e | `test_security_basic`, `test_filters` |
+| **Hardline cấm xóa file OS qua SSH/VPN** (cmdguard) | ✅ e2e | `test_cmdguard` (45 case né tránh) |
+| **Hardline DB read-only** (sqlguard) | ✅ e2e | `test_sqlguard` (26 case) |
+| Provider interface + failover + FakeProvider | ✅ e2e (với FakeProvider) | `test_provider_failover` |
+| Tool registry + wiring bất biến + builtin tools + project scope | ✅ e2e | `test_tools_wiring` |
+| Sandbox: local (dev/test), chạy trực tiếp trên host | ✅ e2e | `test_tools_wiring` |
+| Sandbox: **docker (production, hardened)** | ❌ chưa wire — `sandbox.backend: docker` hiện fallback về `LocalSandbox` (chạy thẳng trên host, không mount workspace, không cô lập mạng); `DockerSandbox` tồn tại nhưng `build_app()`/`App` chưa bao giờ dùng tới nó | `test_docker_sandbox` (`xfail`, cần Docker daemon; skip sạch nếu không có) |
+| Agent loop: bounded + prune + checkpoint/resume + cancel | 🟡 fake — đúng với `FakeProvider`; với provider OpenAI-compatible thật, system prompt hiện KHÔNG được gửi và thứ tự message assistant(tool_use)→tool sai chuẩn OpenAI | `test_core_loop` (fake), `test_real_provider_contract` (`xfail`, provider thật qua transport inject) |
+| Tracing + span store + cost ledger | ✅ e2e | `test_obs` |
+| Memory: workspace + review gate + FTS5 (tiếng Việt) | ✅ e2e | `test_memory` |
+| Remote ops: host profile + ssh_exec + log_read + vpn | 🟡 fake (backend inject, chưa SSH/VPN thật) | `test_remote_db` |
+| DB tools: db_query/db_config read-only 4 lớp | 🟡 fake (executor inject, chưa DB thật ngoài sqlite) | `test_remote_db` |
+| Skills: loader + disclosure + lint + review gate **(wired vào `yett chat`)** | ✅ e2e | `test_skills_hooks_sched`, `test_group2_wired` |
+| Hooks: mutate/deny + cách ly lỗi **(wired)** | ✅ e2e | `test_skills_hooks_sched` |
+| Scheduler: cron + overlap + unattended approval timeout | ✅ e2e | `test_skills_hooks_sched` |
+| Eval suite golden tasks | ✅ e2e | `test_eval_websearch` |
+| **`web_search` tool** | ❌ chưa wire — `App._wire_search()` là no-op; tool chỉ được gọi trực tiếp trong test, `yett chat` chưa bao giờ đăng ký nó vào registry | `test_eval_websearch` (gọi tool trực tiếp, không qua `App`) |
+| Policy engine (policy-as-config, drop-in) + immutable core | ✅ e2e | `test_phase3` |
+| Audit hash-chain + retention + channel gating + analytics | ✅ e2e | `test_phase3`, `test_phase3_extra` |
+| Subagent delegation 1 cấp (không leo thang quyền) **(wired)** | ✅ e2e | `test_phase3`, `test_group2_wired` |
+| **DB query read-only (sqlite thật + lazy postgres/mysql), wired** | ✅ e2e | `test_group2_wired` |
+| RPC code execution (broker + caps + secret strip) | 🟡 fake (in-process; production dùng socket-in-container, chưa test) | `test_phase3_extra` |
+| **Adapter LLM thật (OpenAI-compatible: GLM 5.2, MiniMax M3...)** | 🟡 fake — parse response/lỗi đúng qua transport inject, **chưa gọi API thật**; xem thêm dòng "Agent loop" ở trên cho bug system-prompt/tool-ordering khi loop dùng provider này | `test_openai_compat` |
+| `yett chat` nối config thật + provider factory + secret store | ✅ e2e (build_app lắp ráp đúng); provider vẫn cần key thật để gọi mạng | `test_openai_compat`, verify build_app |
+| Packaging: config mẫu, pricing, bundled skills, subagent defs, deploy+runbook, backup/restore | ✅ e2e | — |
 | Telegram, VPN/SSH CLI thật, Anthropic native | ⏳ interface + backend inject sẵn, cần tài nguyên ngoài để nối | — |
 
 ## Repo này sẽ làm gì

@@ -7,7 +7,11 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -22,6 +26,8 @@ jobs:
       - name: Mypy (strict)
         run: mypy src/yett
       - name: Import-linter (bất biến kiến trúc — AG-3)
-        run: PYTHONPATH=src lint-imports
+        env:
+          PYTHONPATH: src
+        run: lint-imports
       - name: Pytest
         run: pytest -q
