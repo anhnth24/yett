@@ -15,7 +15,7 @@ yett setup           # wizard cài đặt từng bước: provider → model →
 yett serve --open    # 🖥️ mở giao diện chat WEB (localhost) — giống "app"
 yett chat "báo cáo tiến độ tuần này của các project"   # hoặc dùng CLI
 yett usage --by provider --state state
-pytest -q            # 182 test
+pytest -q            # 183 test
 ```
 
 **Muốn dùng như một app Windows:** `yett serve --open` mở UI chat trong trình duyệt; hoặc đóng gói `yett.exe` (double-click chạy, không cần Python) — xem [`packaging/BUILD_EXE.md`](packaging/BUILD_EXE.md).
