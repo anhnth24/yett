@@ -1,7 +1,10 @@
 """Checkpoint store (spec P0-P1 §5.2, P1.2.4). Persist trạng thái vòng lặp → resume.
 
-Bất biến: resume KHÔNG chạy lại tool đã có side-effect. Ta lưu tập tool_call_id đã
-hoàn thành; khi resume, các tool_call này bị bỏ qua (idempotency).
+Bất biến: resume KHÔNG chạy lại tool đã có side-effect. RT-2: lưu ĐẦY ĐỦ lịch sử message
+(assistant tool_use + nội dung tool_result) — không chỉ id — để `AgentLoop` rebuild lại
+`Context` khi resume mà KHÔNG cần hỏi lại model từ đầu (id do provider cấp non-deterministic
+giữa các lần gọi nên không thể dùng làm khoá idempotency qua resume). Idempotency khi resume
+dựa trên chữ ký ổn định `tool_name + hash(args)` (`completed_sigs`, xem `core.context`).
 """
 
 from __future__ import annotations
@@ -9,6 +12,8 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+
+from yett.provider.base import Message, ToolCall
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS checkpoints (
@@ -18,6 +23,39 @@ CREATE TABLE IF NOT EXISTS checkpoints (
   PRIMARY KEY (session_key, turn_id)
 );
 """
+
+
+def serialize_messages(messages: list[Message]) -> list[dict]:
+    """Chuyển `list[Message]` (kể cả assistant tool_use) thành dict JSON-safe để lưu
+    checkpoint (RT-2)."""
+    out: list[dict] = []
+    for m in messages:
+        d: dict = {"role": m.role, "content": m.content}
+        if m.tool_call_id is not None:
+            d["tool_call_id"] = m.tool_call_id
+        if m.tool_calls:
+            d["tool_calls"] = [{"id": tc.id, "name": tc.name, "args": tc.args} for tc in m.tool_calls]
+        out.append(d)
+    return out
+
+
+def deserialize_messages(data: list[dict]) -> list[Message]:
+    """Ngược lại `serialize_messages` — dùng để rebuild `Context` khi resume (RT-2)."""
+    out: list[Message] = []
+    for d in data:
+        raw_tc = d.get("tool_calls")
+        tool_calls = (
+            [ToolCall(id=t["id"], name=t["name"], args=t["args"]) for t in raw_tc] if raw_tc else None
+        )
+        out.append(
+            Message(
+                role=d["role"],
+                content=d["content"],
+                tool_call_id=d.get("tool_call_id"),
+                tool_calls=tool_calls,
+            )
+        )
+    return out
 
 
 class CheckpointStore:

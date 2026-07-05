@@ -13,7 +13,7 @@ import pytest
 from yett.config.models import SecurityCfg, ToolRule
 from yett.core.cancel import CancelToken
 from yett.core.checkpoint import CheckpointStore
-from yett.core.context import assemble_context
+from yett.core.context import assemble_context, tool_call_signature
 from yett.core.loop import AgentLoop, LoopConfig
 from yett.obs.spanstore import SpanStore
 from yett.provider.failover import FailoverRouter
@@ -124,9 +124,11 @@ async def test_resume_does_not_rerun_tool(tmp_path) -> None:
     with pytest.raises(RuntimeError):
         await loop.run_turn(ctx, session_key="s1", turn_id="t1")
     assert tool.runs == 1
-    # checkpoint còn "running" với completed=[c1]
+    # checkpoint còn "running", idempotency theo chữ ký ổn định (RT-2) — KHÔNG theo id
+    # provider (id không sống sót qua resume vì provider cấp id mới mỗi lần gọi).
     saved = ckpt.load("s1", "t1")
-    assert saved["status"] == "running" and "c1" in saved["state"]["completed_tool_calls"]
+    sig = tool_call_signature("sideeffect", {})
+    assert saved["status"] == "running" and sig in saved["state"]["completed_sigs"]
     store.close()
 
     # Lần 2 (resume cùng turn_id): tool c1 KHÔNG chạy lại.
