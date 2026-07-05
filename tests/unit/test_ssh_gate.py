@@ -54,6 +54,57 @@ def test_log_read_known_host_allowed() -> None:
     assert dec.verdict == "allow"
 
 
+# --- P1-9/RT-13: log_read containment thật ở tầng TOOL (Gate chỉ kiểm host tồn tại, "tool tự
+# kiểm path" — xem basic_gate.py._gate_log_read). Path remote LUÔN POSIX (server SSH); dùng
+# PurePosixPath + chuẩn hóa lexical, KHÔNG Path.resolve() local (controller có thể Windows).
+def test_log_read_path_allowed_exact_and_glob_on_filename_only() -> None:
+    from yett.tools.remote.ssh_exec import _path_allowed
+
+    allow = ["/var/log/app/*.log", "/var/log/exact.txt"]
+    assert _path_allowed("/var/log/app/e.log", allow)
+    assert _path_allowed("/var/log/exact.txt", allow)
+    assert not _path_allowed("/var/log/other/e.log", allow)  # thư mục khác
+    assert not _path_allowed("/var/log/exact.txt.bak", allow)  # không phải match đúng tên
+
+
+def test_log_read_path_traversal_denied() -> None:
+    from yett.tools.remote.ssh_exec import _path_allowed
+
+    allow = ["/var/log/app/*.log"]
+    # Trước đây `fnmatch.fnmatch(path, pattern)` so trên CẢ đường dẫn: '*' khớp cả '/' và
+    # '..' nên traversal vẫn "kết thúc bằng .log" và lọt qua. Chuẩn hóa lexical rồi so
+    # thư mục cha CHÍNH XÁC đóng lỗ này.
+    assert not _path_allowed("/var/log/app/../../etc/passwd.log", allow)
+    assert not _path_allowed("../../etc/passwd", allow)  # path tương đối → fail-closed
+    assert not _path_allowed("/etc/passwd.log", allow)  # đuôi khớp nhưng sai thư mục
+
+
+async def test_log_read_tool_denies_traversal_before_touching_backend() -> None:
+    from yett.tools.remote.hostprofile import HostProfile, HostRegistry
+    from yett.tools.remote.ssh_exec import LogReadTool
+
+    class _FakeBackend:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def run(self, host, cmd, *, key):
+            self.calls += 1
+            return (0, "KHÔNG được chạy", "")
+
+    class _FakeSecrets:
+        def get(self, name: str) -> str:
+            return "KEY"
+
+    hosts = HostRegistry({
+        "uat": HostProfile(address="10.0.0.1", auth="keyfile:k", log_paths=["/var/log/app/*.log"]),
+    })
+    backend = _FakeBackend()
+    tool = LogReadTool(hosts, backend, _FakeSecrets())
+    res = await tool.run({"host": "uat", "path": "/var/log/app/../../etc/passwd.log"}, _Ctx())
+    assert res.is_error and "DENIED" in res.content
+    assert backend.calls == 0  # containment chặn TRƯỚC khi chạm SSH backend thật
+
+
 def test_app_registers_ssh_tools(tmp_path: Path) -> None:
     import itertools
 

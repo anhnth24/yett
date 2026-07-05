@@ -54,7 +54,9 @@ async def test_hardline_never_reaches_sandbox(tmp_path) -> None:
 
 async def test_exec_runs_when_allowed(tmp_path) -> None:
     scope = ProjectScope(tmp_path, {})
-    rules = [ToolRule(tool="exec", arg_patterns={"cmd": r"^echo"}, effect="allow")]
+    # [allowlist-anchor] pattern giờ phải khớp TOÀN BỘ cmd (fullmatch, không còn prefix ngầm
+    # định qua search()) — xem security/allowlist.py.
+    rules = [ToolRule(tool="exec", arg_patterns={"cmd": r"^echo hello$"}, effect="allow")]
     gate = BasicGate(SecurityCfg(allowlist=rules))
     res = await execute_tool("exec", {"cmd": "echo hello"}, _Ctx(), gate=gate, registry=_registry(scope))
     assert not res.is_error and "hello" in res.content

@@ -131,7 +131,10 @@ security:
     - tool: write_file
       effect: allow
     - tool: exec
-      arg_patterns: { cmd: "^(git|ls|cat|grep|python|pytest|npm|go) " }
+      # Pattern phải khớp TOÀN BỘ chuỗi cmd (fullmatch, không còn substring/prefix ngầm định
+      # — xem allowlist.py/schema.py "anchored matching"). "(\s.*)?$" giữ nguyên ý định gốc
+      # "tên lệnh + tham số bất kỳ", chỉ khác là giờ phải khai rõ thay vì search() ngầm cho.
+      arg_patterns: { cmd: "^(git|ls|cat|grep|python|pytest|npm|go)(\\s.*)?$" }
       effect: allow
     - tool: load_skill              # cho phép agent nạp hướng dẫn skill
       effect: allow
