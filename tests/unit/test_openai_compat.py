@@ -92,6 +92,23 @@ def test_factory_builds_glm() -> None:
 
 def test_factory_requires_base_url() -> None:
     secrets = InMemorySecretStore({"llm_key": "S"})
-    cfg = ProviderCfg(name="openai_compat", model="glm-5.2", api_key_secret="llm_key")
+    # name="openai_compat" generic không có base_url mặc định → phải khai
+    cfg = ProviderCfg(name="openai_compat", model="x", api_key_secret="llm_key")
     with pytest.raises(ValueError):
         build_provider(cfg, secrets)
+
+
+def test_factory_default_base_url_by_provider() -> None:
+    # Chọn name="deepseek" → base_url mặc định, không cần khai trong config.
+    secrets = InMemorySecretStore({"llm_key": "S"})
+    cfg = ProviderCfg(name="deepseek", model="deepseek-chat", api_key_secret="llm_key")
+    p = build_provider(cfg, secrets)
+    assert p.name() == "deepseek"
+
+
+def test_factory_supports_many_providers() -> None:
+    secrets = InMemorySecretStore({"k": "S"})
+    for name in ["openai", "gemini", "glm", "minimax", "grok", "qwen", "mistral", "groq"]:
+        cfg = ProviderCfg(name=name, model="m", api_key_secret="k")
+        p = build_provider(cfg, secrets)
+        assert p.name() == name
