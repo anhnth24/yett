@@ -13,6 +13,7 @@ from yett.config.models import HarnessCfg
 from yett.core.checkpoint import CheckpointStore
 from yett.core.context import assemble_context
 from yett.core.loop import AgentLoop, LoopConfig, TurnResult
+from yett.memory.session import SessionStore
 from yett.memory.workspace import WorkspaceMemory
 from yett.obs.cost import compute_cost
 from yett.obs.spanstore import SpanStore
@@ -71,6 +72,7 @@ class App:
 
         self.spanstore = SpanStore(state_dir / "traces.db", redactor=redact_attrs)
         self.checkpoints = CheckpointStore(state_dir / "scheduler.db")
+        self.sessions = SessionStore(state_dir / "sessions.db")
         self.scope = ProjectScope(cfg.workspace_root, {n: p.path for n, p in cfg.projects.items()})
         self.workspace = WorkspaceMemory(cfg.workspace_root)
 
@@ -216,11 +218,19 @@ class App:
         system = self.workspace.build_system_prompt(
             self.capabilities_summary(), token_budget=self.cfg.budget.context_token_budget // 2
         )
-        ctx = assemble_context(system, message)
+        # Nhớ hội thoại xuyên turn: nạp lại lượt gần nhất của session (provider-agnostic).
+        history = self.sessions.history(
+            session_key, token_budget=self.cfg.budget.context_token_budget // 4
+        )
+        ctx = assemble_context(system, message, history=history)
         tid = turn_id or f"turn-{int(self._clock()*1000)}"
         # session_ctx mang allowed_tools = tất cả (cho phép delegate ở cấp cha)
         parent = _MainCtx(session_key, set(self.registry.names()))
-        return await self.loop.run_turn(ctx, session_key=session_key, turn_id=tid, session_ctx=parent)
+        res = await self.loop.run_turn(ctx, session_key=session_key, turn_id=tid, session_ctx=parent)
+        # Ghi lượt vào lịch sử (chỉ khi turn xong bình thường, có nội dung trả lời).
+        if res.status == "done" and res.text:
+            self.sessions.record_turn(session_key, message, res.text, ts=self._clock())
+        return res
 
     def set_approver(self, approver) -> None:
         """Gắn approver (vd web ApprovalCenter.request) — turn sẽ hỏi duyệt khi Gate cần."""
@@ -229,6 +239,7 @@ class App:
     def close(self) -> None:
         self.spanstore.close()
         self.checkpoints.close()
+        self.sessions.close()
 
 
 class _MainCtx:
