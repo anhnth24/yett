@@ -20,6 +20,7 @@ from yett.provider.base import ChatResult, Provider
 from yett.provider.failover import FailoverRouter
 from yett.security.basic_gate import BasicGate
 from yett.security.filters import redact_attrs
+from yett.tools.builtin.codenav import GrepTool, ListDirTool
 from yett.tools.builtin.exec import ExecTool
 from yett.tools.builtin.files import ReadFileTool, WriteFileTool
 from yett.tools.builtin.web_fetch import WebFetchTool
@@ -78,6 +79,8 @@ class App:
         self.registry.register(ExecTool(sb, timeout=cfg.sandbox.timeout_sec))
         self.registry.register(ReadFileTool(self.scope))
         self.registry.register(WriteFileTool(self.scope))
+        self.registry.register(ListDirTool(self.scope))
+        self.registry.register(GrepTool(self.scope))
         if fetcher is not None:
             self.registry.register(WebFetchTool(cfg.egress.allowlist, fetcher))
 
@@ -183,6 +186,7 @@ class App:
         Không lộ secret — chỉ tên project/DB/host."""
         tool_desc = {
             "exec": "chạy lệnh trong sandbox", "read_file": "đọc file", "write_file": "ghi file",
+            "list_dir": "liệt kê cây thư mục (trong scope)", "grep": "tìm regex trong source (trong scope)",
             "web_fetch": "tải URL (qua allowlist)", "web_search": "tìm kiếm web",
             "db_query": "query DB CHỈ ĐỌC (không sửa/xóa)", "db_config": "quản lý profile DB",
             "ssh_exec": "chạy lệnh trên server qua SSH (deploy phải duyệt; cấm xóa file)",
