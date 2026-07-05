@@ -25,9 +25,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("demo", help="chạy một turn mẫu offline (FakeProvider)")
 
-    chat = sub.add_parser("chat", help="[P1] hội thoại với agent (cần config)")
+    chat = sub.add_parser("chat", help="hội thoại với agent (cần config + provider)")
     chat.add_argument("message")
     chat.add_argument("--config", default="config/harness.yaml")
+    chat.add_argument("--pricing", default="config/pricing.yaml")
+    chat.add_argument("--state", default="state")
+    chat.add_argument("--session", default="main")
 
     traces = sub.add_parser("traces", help="xem trace")
     traces.add_argument("action", choices=["list", "get"], nargs="?", default="list")
@@ -116,8 +119,30 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "usage":
         return _cmd_usage(args)
     if args.command == "chat":
-        print("[yett] 'chat' cần config + provider thật (Phase 1 tích hợp); dùng 'yett demo' để thử.", file=sys.stderr)
-        return 0
+        return _cmd_chat(args)
+    return 0
+
+
+def _cmd_chat(args) -> int:
+    from yett.app import build_app
+    from yett.errors import YettError
+    from yett.secrets.backends import EnvSecretStore
+
+    if not Path(args.config).exists():
+        print(f"[yett] chưa có config {args.config}. Copy từ config/harness.example.yaml.", file=sys.stderr)
+        return 1
+    pricing = args.pricing if Path(args.pricing).exists() else None
+    try:
+        app = build_app(args.config, EnvSecretStore(), state_dir=Path(args.state), pricing_path=pricing)
+    except YettError as e:
+        print(f"[yett] lỗi khởi động: {e}", file=sys.stderr)
+        return 1
+    try:
+        res = asyncio.run(app.chat(args.message, session_key=args.session))
+        print(f"[agent] {res.text}")
+        print(f"[trace {res.trace_id} · {res.status} · {res.iterations} vòng]", file=sys.stderr)
+    finally:
+        app.close()
     return 0
 
 

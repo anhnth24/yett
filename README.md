@@ -9,12 +9,19 @@
 ## Chạy thử nhanh
 
 ```bash
-pip install -e ".[dev]"           # hoặc: pip install pydantic pyyaml sqlglot pytest pytest-asyncio
-yett demo                          # chạy một turn agent offline (FakeProvider) end-to-end
-yett traces list --state .yett-demo/state
-yett usage --state .yett-demo/state
-pytest -q                          # 161 test
+pip install -e ".[dev]"
+yett demo                          # turn agent offline (FakeProvider), không cần key
+pytest -q                          # 167 test
+
+# Dùng thật với GLM 5.2 hoặc MiniMax M3 (đều OpenAI-compatible):
+cp config/harness.example.yaml config/harness.yaml   # sửa provider + projects
+export YETT_SECRET_LLM_KEY="<api-key>"
+yett chat "báo cáo tiến độ tuần này"
+yett usage --by provider --state state
 ```
+
+Cài đặt đầy đủ trên WSL2 + Docker Desktop: xem [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md).
+Model đã cấu hình sẵn: **GLM 5.2** (`glm-5.2`) hoặc **MiniMax M3** (`MiniMax-M3`) — đổi bằng cách sửa `config/harness.yaml`, không đụng code.
 
 ## Trạng thái implement
 
@@ -41,7 +48,10 @@ pytest -q                          # 161 test
 | Audit hash-chain + retention + channel gating + analytics | ✅ | `test_phase3`, `test_phase3_extra` |
 | Subagent delegation 1 cấp (không leo thang quyền) | ✅ | `test_phase3` |
 | RPC code execution (broker + caps + secret strip) | ✅ (in-process; production dùng socket-in-container) | `test_phase3_extra` |
-| Adapter LLM thật (Anthropic/OpenAI), Telegram, VPN/SSH CLI thật | ⏳ interface sẵn, cần tài nguyên ngoài để nối | — |
+| **Adapter LLM thật (OpenAI-compatible: GLM 5.2, MiniMax M3...)** | ✅ (cần API key để gọi mạng thật) | `test_openai_compat` |
+| `yett chat` nối config thật + provider factory + secret store | ✅ | `test_openai_compat`, verify build_app |
+| Packaging: config mẫu, pricing, bundled skills, subagent defs, deploy+runbook, backup/restore | ✅ | — |
+| Telegram, VPN/SSH CLI thật, Anthropic native | ⏳ interface + backend inject sẵn, cần tài nguyên ngoài để nối | — |
 
 ## Repo này sẽ làm gì
 

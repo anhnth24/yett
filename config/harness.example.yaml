@@ -1,0 +1,75 @@
+# yett — config mẫu. Copy thành config/harness.yaml rồi điền.
+# Secret KHÔNG để trong file này — đặt qua biến môi trường YETT_SECRET_<TÊN IN HOA>.
+#   vd: export YETT_SECRET_LLM_KEY="sk-..."
+
+# ---- Provider: chọn MiniMax hoặc GLM (đều OpenAI-compatible) ----
+
+# GLM 5.2 (Zhipu AI):
+provider:
+  name: openai_compat
+  model: glm-5.2                    # tên model theo bảng của Zhipu
+  api_key_secret: llm_key           # đọc từ env YETT_SECRET_LLM_KEY
+  base_url: https://open.bigmodel.cn/api/paas/v4
+  max_retries: 4
+
+# MiniMax M3 (bỏ comment, comment block GLM ở trên nếu dùng):
+# provider:
+#   name: openai_compat
+#   model: MiniMax-M3
+#   api_key_secret: llm_key
+#   base_url: https://api.minimax.io/v1     # (bản quốc tế; bản TQ: https://api.minimaxi.com/v1)
+#   max_retries: 4
+
+# Provider dự phòng (tuỳ chọn) — failover khi provider chính lỗi cứng.
+# Ví dụ: chính GLM 5.2, dự phòng MiniMax M3 (cần key riêng):
+# fallback_provider:
+#   name: openai_compat
+#   model: MiniMax-M3
+#   api_key_secret: llm_key_2
+#   base_url: https://api.minimax.io/v1
+
+budget:
+  max_loop_iterations: 20
+  context_token_budget: 120000
+  monthly_cost_alert_usd: 50
+
+# ---- Project của bạn (trên ổ đĩa Windows, đường dẫn WSL2) ----
+projects:
+  go-learn:
+    path: /mnt/d/work/go-learn
+  # them-project:
+  #   path: /mnt/c/Users/ban/source/project-x
+
+# ---- Sandbox ----
+sandbox:
+  backend: docker            # docker (Docker Desktop qua WSL2) | local (dev, ít cô lập hơn)
+  network: none              # container mặc định không mạng
+  timeout_sec: 120
+  mem_limit: 2g
+  cpus: 2.0
+
+# ---- Egress allowlist (domain web_fetch/search được phép) ----
+egress:
+  allowlist:
+    - open.bigmodel.cn       # GLM API
+    - api.minimax.io         # MiniMax API
+    # - github.com
+
+# ---- Security (Policy Gate) ----
+security:
+  approval_mode: manual      # manual | smart (không có YOLO)
+  approval_timeout_sec: 300  # scheduled run: hết hạn approval → fail sạch
+  allowlist:
+    # Cho phép đọc file trong project + chạy lệnh git/test an toàn:
+    - tool: read_file
+      effect: allow
+    - tool: write_file
+      effect: allow
+    - tool: exec
+      arg_patterns: { cmd: "^(git|ls|cat|grep|python|pytest|npm|go) " }
+      effect: allow
+    # Lệnh exec khác → mặc định DENY (fail-closed). Thêm rule nếu cần.
+
+secret_backend: env
+timezone: Asia/Ho_Chi_Minh
+workspace_root: ./workspace

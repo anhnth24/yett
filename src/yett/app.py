@@ -29,6 +29,23 @@ from yett.sandbox.base import Sandbox
 from yett.sandbox.local import LocalSandbox
 
 
+def build_app(
+    config_path: str | Path, secrets, *, state_dir: Path, pricing_path: str | Path | None = None
+) -> "App":
+    """Dựng App từ config file thật (dùng cho `yett chat`). Provider build từ factory."""
+    from yett.config.loader import load_config, load_pricing
+    from yett.provider.factory import build_provider
+
+    cfg = load_config(config_path)
+    provider = build_provider(cfg.provider, secrets)
+    fallback = build_provider(cfg.fallback_provider, secrets) if cfg.fallback_provider else None
+    pricing = load_pricing(pricing_path) if pricing_path else {}
+    sandbox = LocalSandbox() if cfg.sandbox.backend == "local" else None  # docker dựng riêng khi cần
+    return App(
+        cfg, provider, state_dir=state_dir, pricing=pricing, sandbox=sandbox, fallback=fallback
+    )
+
+
 class App:
     def __init__(
         self,

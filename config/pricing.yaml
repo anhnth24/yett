@@ -1,0 +1,9 @@
+# Bảng giá cho cost ledger (USD / 1 triệu token). SỐ THAM KHẢO — đối soát với billing thật.
+# [Unverified] giá thay đổi theo thời gian; cập nhật theo trang giá của provider.
+openai_compat:
+  # GLM 5.2 (Zhipu) — [Unverified], điền theo bảng giá bigmodel.cn
+  glm-5.2: { input_per_mtok: 0.0, output_per_mtok: 0.0 }
+  # MiniMax M3 — [Unverified], điền theo bảng giá minimax
+  MiniMax-M3: { input_per_mtok: 0.0, output_per_mtok: 0.0 }
+  # fallback cho model chưa khai giá:
+  "*": { input_per_mtok: 0.0, output_per_mtok: 0.0 }

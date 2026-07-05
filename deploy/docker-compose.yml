@@ -1,0 +1,18 @@
+# Deploy-per-tenant: 1 stack = 1 khách/instance. Dùng cho bản server; local WSL2 chạy thẳng bằng CLI.
+services:
+  yett:
+    build: ..
+    image: yett:local
+    environment:
+      # Secret truyền qua env (không commit). Đặt trong .env cạnh file này.
+      - YETT_SECRET_LLM_KEY=${YETT_SECRET_LLM_KEY}
+    volumes:
+      - ./config:/app/config:ro          # config + policy mount read-only (immutable core)
+      - yett-state:/app/state            # 3 SQLite (traces/scheduler/sessions)
+      - yett-workspace:/app/workspace    # memory file-based
+    # Cần Docker socket nếu sandbox backend=docker (cân nhắc rootless/DinD cho cô lập chặt).
+    restart: unless-stopped
+
+volumes:
+  yett-state:
+  yett-workspace:
