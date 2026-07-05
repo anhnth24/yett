@@ -12,10 +12,13 @@
 pip install -e ".[dev]"
 yett demo            # turn agent offline (FakeProvider), không cần key
 yett setup           # wizard cài đặt từng bước: provider → model → key → project
-yett chat "báo cáo tiến độ tuần này của các project"
+yett serve --open    # 🖥️ mở giao diện chat WEB (localhost) — giống "app"
+yett chat "báo cáo tiến độ tuần này của các project"   # hoặc dùng CLI
 yett usage --by provider --state state
-pytest -q            # 174 test
+pytest -q            # 182 test
 ```
+
+**Muốn dùng như một app Windows:** `yett serve --open` mở UI chat trong trình duyệt; hoặc đóng gói `yett.exe` (double-click chạy, không cần Python) — xem [`packaging/BUILD_EXE.md`](packaging/BUILD_EXE.md).
 
 **Hướng dẫn cài đặt đầy đủ (WSL2 + Docker Desktop): [`INSTALL.md`](INSTALL.md).**
 Chọn 1 trong 10+ model top (GLM 5.2, MiniMax M3, DeepSeek, Gemini, GPT-5.5, Claude, Grok, Qwen, Mistral) ngay trong wizard hoặc sửa `config/harness.yaml` — không đụng code. Giá thật ở [`config/pricing.yaml`](config/pricing.yaml).

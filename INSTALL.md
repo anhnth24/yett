@@ -185,6 +185,12 @@ mkdir -p secrets && printf '%s' "<API-KEY>" > secrets/llm_key && chmod 600 secre
 
 ## Dùng
 
+**Giao diện web (giống app):**
+```bash
+yett serve --open        # mở trình duyệt vào giao diện chat localhost
+```
+
+**Hoặc CLI:**
 ```bash
 yett chat "xin chào, giới thiệu về bạn"
 yett chat "báo cáo tiến độ tuần này của các project"
@@ -192,6 +198,8 @@ yett traces list --state state          # xem lịch sử turn
 yett traces get <trace-id> --state state
 yett usage --by provider --state state  # chi phí theo provider
 ```
+
+**Đóng gói thành `yett.exe`** (double-click chạy, không cần Python): xem [`packaging/BUILD_EXE.md`](packaging/BUILD_EXE.md). Double-click exe lần đầu tự chạy wizard rồi mở web UI.
 
 Đổi model/provider bất cứ lúc nào: sửa `config/harness.yaml` (hoặc chạy lại `yett setup`), không đụng code.
 

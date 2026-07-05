@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS checkpoints (
 
 class CheckpointStore:
     def __init__(self, db_path: str | Path) -> None:
-        self._conn = sqlite3.connect(str(db_path))
+        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 

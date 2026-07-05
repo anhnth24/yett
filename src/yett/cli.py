@@ -26,6 +26,14 @@ def build_parser() -> argparse.ArgumentParser:
     setup = sub.add_parser("setup", help="wizard cài đặt từng bước (provider, key, project)")
     setup.add_argument("--config", default="config/harness.yaml")
 
+    serve = sub.add_parser("serve", help="mở giao diện chat web (localhost)")
+    serve.add_argument("--config", default="config/harness.yaml")
+    serve.add_argument("--pricing", default="config/pricing.yaml")
+    serve.add_argument("--state", default="state")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8765)
+    serve.add_argument("--open", action="store_true", help="tự mở trình duyệt")
+
     sub.add_parser("demo", help="chạy một turn mẫu offline (FakeProvider)")
 
     chat = sub.add_parser("chat", help="hội thoại với agent (cần config + provider)")
@@ -44,6 +52,27 @@ def build_parser() -> argparse.ArgumentParser:
     usage.add_argument("--by", choices=["provider", "model", "day"], default="provider")
     usage.add_argument("--state", default="state")
     return p
+
+
+def _cmd_serve(args) -> int:
+    from yett.app import build_app
+    from yett.config.loader import load_config
+    from yett.errors import YettError
+    from yett.secrets.resolve import build_secret_store
+    from yett.web.server import serve_forever
+
+    if not Path(args.config).exists():
+        print(f"[yett] chưa có config {args.config}. Chạy 'yett setup' trước.", file=sys.stderr)
+        return 1
+    pricing = args.pricing if Path(args.pricing).exists() else None
+    try:
+        secrets = build_secret_store(load_config(args.config).secret_backend)
+        app = build_app(args.config, secrets, state_dir=Path(args.state), pricing_path=pricing)
+    except YettError as e:
+        print(f"[yett] lỗi khởi động: {e}", file=sys.stderr)
+        return 1
+    serve_forever(app, host=args.host, port=args.port, open_browser=args.open)
+    return 0
 
 
 def _cmd_setup(args) -> int:
@@ -133,6 +162,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "setup":
         return _cmd_setup(args)
+    if args.command == "serve":
+        return _cmd_serve(args)
     if args.command == "demo":
         return _cmd_demo()
     if args.command == "traces":

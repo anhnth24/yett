@@ -42,7 +42,7 @@ class SpanStore:
         self._redact = redactor or (lambda d: d)
         self._buffer: list[Span] = []
         self._buffer_size = buffer_size
-        self._conn = sqlite3.connect(self.db_path)
+        self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 
