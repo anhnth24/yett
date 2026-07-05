@@ -2,9 +2,9 @@
 
 FakeProvider bỏ qua toàn bộ cấu trúc `messages` gửi lên API — nên 2 lỗi P0 sau vô hình
 với mọi test khác trong repo:
-  - P0-2: `Context.system` (system prompt) không bao giờ được đưa vào `ctx.messages`,
+  - P0-3: `Context.system` (system prompt) không bao giờ được đưa vào `ctx.messages`,
     nên OpenAICompatProvider._to_openai_msg không có gì để gửi role="system".
-  - P0-3: khi model trả tool_calls, `AgentLoop.run_turn` chỉ gọi `ctx.add_assistant()`
+  - P0-2: khi model trả tool_calls, `AgentLoop.run_turn` chỉ gọi `ctx.add_assistant()`
     ở nhánh kết thúc turn (end_turn/force_text) — turn có tool_use KHÔNG được thêm vào
     context. Message "tool" bị nối thẳng sau message "user" trước đó, sai thứ tự chuẩn
     OpenAI (mọi message role=tool phải theo ngay sau message role=assistant có tool_calls
@@ -13,15 +13,13 @@ với mọi test khác trong repo:
 http_post được inject (offline, không gọi mạng thật) — recorder ghi lại đúng body đã gửi
 để assert cấu trúc.
 
-xfail(strict=True): Phase 2 sửa xong `loop.py`/`context.py` sẽ gỡ marker này; nếu bug tái
-phát, xfail strict lật thành fail (fail-loud) thay vì lặng im.
+Phase 2 đã sửa `loop.py`/`context.py` (system message + assistant tool_use turn) nên test
+này giờ PASS bình thường — không còn `xfail`.
 """
 
 from __future__ import annotations
 
 import itertools
-
-import pytest
 
 from yett.config.models import SecurityCfg, ToolRule
 from yett.core.checkpoint import CheckpointStore
@@ -75,11 +73,6 @@ def _text_response(text: str) -> dict:
     }
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="P0-2/P0-3: system prompt không được gửi cho provider thật + turn tool_use "
-    "không được thêm vào context trước tool_result (Phase 2 sẽ fix rồi gỡ marker này).",
-)
 async def test_real_provider_sends_system_prompt_and_valid_tool_ordering(tmp_path) -> None:
     recorded: list[dict] = []
 

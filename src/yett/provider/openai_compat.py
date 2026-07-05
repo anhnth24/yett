@@ -65,7 +65,23 @@ class OpenAICompatProvider:
 def _to_openai_msg(m: Message) -> dict:
     if m.role == "tool":
         return {"role": "tool", "tool_call_id": m.tool_call_id or "", "content": m.content}
+    if m.role == "assistant" and m.tool_calls:
+        # P0-2: assistant tool_use — content nullable theo chuẩn OpenAI khi model không kèm
+        # text (chỉ gọi tool).
+        return {
+            "role": "assistant",
+            "content": m.content or None,
+            "tool_calls": [_to_openai_tool_call(tc) for tc in m.tool_calls],
+        }
     return {"role": m.role, "content": m.content}
+
+
+def _to_openai_tool_call(tc: ToolCall) -> dict:
+    return {
+        "id": tc.id,
+        "type": "function",
+        "function": {"name": tc.name, "arguments": json.dumps(tc.args, ensure_ascii=False)},
+    }
 
 
 def _to_openai_tool(t: ToolSchema) -> dict:

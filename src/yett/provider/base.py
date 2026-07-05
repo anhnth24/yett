@@ -31,6 +31,9 @@ class Message:
     role: Literal["system", "user", "assistant", "tool"]
     content: str
     tool_call_id: str | None = None
+    # P0-2: lượt assistant khi model gọi tool — PHẢI có trong context TRƯỚC tool_result
+    # tương ứng (đúng thứ tự OpenAI/Anthropic). None với mọi role khác / assistant text-only.
+    tool_calls: list[ToolCall] | None = None
 
 
 @dataclass(frozen=True)

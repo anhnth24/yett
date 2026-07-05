@@ -11,9 +11,10 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from yett.core.cancel import Cancelled, CancelToken
-from yett.core.context import Context
+from yett.core.checkpoint import deserialize_messages, serialize_messages
+from yett.core.context import Context, pending_tool_calls, tool_call_signature
 from yett.obs.tracer import SpanKind
-from yett.provider.base import ChatResult
+from yett.provider.base import ChatResult, ToolCall
 from yett.provider.failover import ContextOverflow, FailoverRouter
 from yett.security.gate import PolicyGate
 from yett.tools.registry import Registry
@@ -21,6 +22,10 @@ from yett.tools.wiring import Approver, Auditor, execute_tool
 
 # clock injectable để test deterministic (spec §0).
 Clock = Callable[[], float]
+
+# RT-3: cả "running" (crash giữa turn) và "canceled" (hủy sạch) đều resumable — chỉ trạng
+# thái "done" mới coi turn đã xong, không cần (và không nên) khôi phục lại.
+_RESUMABLE_STATUSES = ("running", "canceled")
 
 
 @dataclass
@@ -90,17 +95,38 @@ class AgentLoop:
         root = self._tracer.start_span(
             SpanKind.AGENT, "turn", start_ts=self._clock(), session_key=session_key
         )
-        completed: list[str] = []
-        # resume: bỏ qua tool_call đã hoàn thành ở lần chạy trước
+        completed: list[str] = []  # id trong PHẠM VI lần chạy này (trả về TurnResult)
+        completed_sigs: dict[str, str] = {}  # RT-2: chữ ký ổn định -> kết quả (idempotency)
+
+        # RT-2/RT-3: resume — "running" (crash giữa turn) HOẶC "canceled" (hủy sạch) đều
+        # khôi phục được: nạp lại TOÀN BỘ lịch sử message (không chỉ id) để loop không phải
+        # hỏi lại model từ đầu; tránh lặp side-effect đã có.
         prev = self._ckpt.load(session_key, turn_id)
-        if prev and prev["status"] == "running":
-            completed = list(prev["state"].get("completed_tool_calls", []))
+        is_resume = prev is not None and prev["status"] in _RESUMABLE_STATUSES
+        if is_resume:
+            state = prev["state"]
+            history = state.get("history")
+            if history is not None:
+                ctx.messages = deserialize_messages(history)
+            completed_sigs = dict(state.get("completed_sigs", {}))
 
         status = "done"
         text = ""
         i = 0
         call_counts: dict[str, int] = {}  # đếm tool-call lặp để chống loop
         try:
+            if is_resume:
+                # Batch dang dở (assistant tool_use chưa đủ tool_result đi kèm) → hoàn tất
+                # TRƯỚC khi hỏi model tiếp — gửi request còn tool_call chưa trả lời là vi
+                # phạm thứ tự OpenAI/Anthropic. Trong cùng try/except Cancelled bên dưới để
+                # hủy giữa lúc hoàn tất batch dang dở cũng được xử lý sạch (RT-3).
+                for tc in pending_tool_calls(ctx.messages):
+                    cancel.check()
+                    await self._execute_tool_call(
+                        tc, ctx, completed, completed_sigs,
+                        session_ctx=session_ctx, root=root, session_key=session_key,
+                        turn_id=turn_id, iteration=prev["iteration"], consult_cache=True,
+                    )
             for i in range(eff_max):
                 cancel.check()
                 # Anti-loop: giữ bước cuối để bắt buộc trả lời (hết budget); hoặc ép trả lời
@@ -137,6 +163,10 @@ class AgentLoop:
                         else:
                             self._emit_event(root, "forced_text_only", session_key)  # chống loop
                     break
+                # P0-2: ghi lượt assistant tool_use vào context TRƯỚC khi chạy tool — đúng
+                # thứ tự OpenAI/Anthropic (message tool phải đứng ngay sau assistant mang
+                # tool_calls khớp id). force_text đã break ở nhánh trên nên không double-add.
+                ctx.add_assistant_tool_calls(res.tool_calls, res.text)
                 # PRUNE
                 if ctx.tokens() > self._cfg.context_token_budget:
                     ctx.prune(self._cfg.context_token_budget)
@@ -144,26 +174,14 @@ class AgentLoop:
                 for tc in res.tool_calls:
                     cancel.check()
                     if tc.id in completed:
-                        continue  # idempotency khi resume
-                    sig = f"{tc.name}:{sorted(tc.args.items())}"
+                        continue  # id còn ổn định trong CÙNG một lần chạy
+                    sig = tool_call_signature(tc.name, tc.args)
                     call_counts[sig] = call_counts.get(sig, 0) + 1
-                    tspan = self._tracer.start_span(
-                        SpanKind.TOOL_CALL, tc.name, start_ts=self._clock(),
-                        trace_id=root.trace_id, parent_id=root.id, session_key=session_key,
+                    await self._execute_tool_call(
+                        tc, ctx, completed, completed_sigs,
+                        session_ctx=session_ctx, root=root, session_key=session_key,
+                        turn_id=turn_id, iteration=i, consult_cache=is_resume,
                     )
-                    result = await execute_tool(
-                        tc.name, tc.args, session_ctx,
-                        gate=self._gate, registry=self._registry,
-                        approver=self._approver, auditor=self._auditor, hooks=self._hooks,
-                    )
-                    self._tracer.end_span(tspan, end_ts=self._clock(), is_error=result.is_error)
-                    ctx.add_tool_result(tc.id, result.content)
-                    completed.append(tc.id)
-                # CHECKPOINT
-                self._ckpt.save(
-                    session_key, turn_id, i,
-                    {"completed_tool_calls": completed}, ts=self._clock(), status="running",
-                )
             else:
                 status = "max_iterations"
                 self._emit_event(root, "max_iterations_reached", session_key)
@@ -178,6 +196,53 @@ class AgentLoop:
         self._ckpt.mark(session_key, turn_id, "done", ts=self._clock())
         self._tracer.end_span(root, end_ts=self._clock(), status=status)
         return TurnResult(text, i + 1, status, root.trace_id, completed)
+
+    async def _execute_tool_call(
+        self,
+        tc: ToolCall,
+        ctx: Context,
+        completed: list[str],
+        completed_sigs: dict[str, str],
+        *,
+        session_ctx,
+        root,
+        session_key: str,
+        turn_id: str,
+        iteration: int,
+        consult_cache: bool,
+    ) -> None:
+        """Chạy 1 tool_call (hoặc trả lại kết quả cache nếu `consult_cache` và đã có chữ ký
+        khớp — RT-2), ghi tool_result vào context, rồi checkpoint NGAY (không đợi hết cả
+        batch) để resume/hủy giữa batch vẫn không mất tiến độ (RT-3).
+
+        `consult_cache` CHỈ bật khi turn này đang resume: trong một lần chạy tươi (không
+        resume), tool-call lặp lại phải chạy THẬT để cơ chế anti-loop (force_text_after_repeats)
+        còn phát hiện được — nếu luôn tra cache thì mọi lần lặp thứ 2 trở đi sẽ bị nuốt âm
+        thầm, anti-loop không bao giờ kích hoạt.
+        """
+        sig = tool_call_signature(tc.name, tc.args)
+        if consult_cache and sig in completed_sigs:
+            ctx.add_tool_result(tc.id, completed_sigs[sig])
+            completed.append(tc.id)
+        else:
+            tspan = self._tracer.start_span(
+                SpanKind.TOOL_CALL, tc.name, start_ts=self._clock(),
+                trace_id=root.trace_id, parent_id=root.id, session_key=session_key,
+            )
+            result = await execute_tool(
+                tc.name, tc.args, session_ctx,
+                gate=self._gate, registry=self._registry,
+                approver=self._approver, auditor=self._auditor, hooks=self._hooks,
+            )
+            self._tracer.end_span(tspan, end_ts=self._clock(), is_error=result.is_error)
+            ctx.add_tool_result(tc.id, result.content)
+            completed.append(tc.id)
+            completed_sigs[sig] = result.content
+        self._ckpt.save(
+            session_key, turn_id, iteration,
+            {"history": serialize_messages(ctx.messages), "completed_sigs": completed_sigs},
+            ts=self._clock(), status="running",
+        )
 
     def _emit_event(self, root, name: str, session_key: str) -> None:
         ev = self._tracer.start_span(
