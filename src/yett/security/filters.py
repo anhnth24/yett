@@ -6,18 +6,40 @@ Chạy SAU khi tool thực thi, TRƯỚC khi result vào context. Cũng dùng đ
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from yett.tools.base import ToolResult
 
-# Pattern secret phổ biến (mở rộng dần). Redact = thay bằng [REDACTED:<loại>].
-_SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
-    ("aws_key", re.compile(r"AKIA[0-9A-Z]{16}")),
-    ("anthropic_key", re.compile(r"sk-ant-[A-Za-z0-9\-_]{20,}")),
-    ("openai_key", re.compile(r"sk-[A-Za-z0-9]{32,}")),
-    ("bearer", re.compile(r"(?i)bearer\s+[A-Za-z0-9\-._~+/]{20,}")),
-    ("pw_in_dsn", re.compile(r"(?i)(://[^:/@\s]+:)[^@/\s]+(@)")),
-    ("private_key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+# Pattern secret phổ biến (mở rộng dần). Redact = thay bằng [REDACTED] (giữ group
+# ngữ cảnh nếu replacement có backreference, vd `\1=[REDACTED]`).
+_SECRET_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
+    ("aws_key", re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED]"),
+    ("anthropic_key", re.compile(r"sk-ant-[A-Za-z0-9\-_]{20,}"), "[REDACTED]"),
+    # [RT-6/19] generic: khớp mọi key dạng sk-<provider->...  (vd sk-proj-, sk-cp-
+    # — format key MiniMax đã lộ/rotate). `\b` trước "sk-" tránh khớp giữa từ
+    # (vd "desk-top-..."); sàn 20 ký tự sau "sk-" tránh khớp cụm ngắn vô hại.
+    ("generic_sk_key", re.compile(r"\bsk-[A-Za-z0-9-]{20,}\b"), "[REDACTED]"),
+    ("bearer", re.compile(r"(?i)bearer\s+[A-Za-z0-9\-._~+/]{20,}"), "[REDACTED]"),
+    ("pw_in_dsn", re.compile(r"(?i)(://[^:/@\s]+:)[^@/\s]+(@)"), r"\1[REDACTED]\2"),
+    # ODBC/ADO DSN: `Pwd=...;` hoặc `Password=...;` — giữ tên key, redact giá trị.
+    ("odbc_dsn_pwd", re.compile(r"(?i)\b(pwd|password)\s*=\s*[^;'\"\s]+"), r"\1=[REDACTED]"),
 ]
+
+# [P0-5][RT-15] Private key PEM block: redact TOÀN KHỐI, không chỉ header.
+# (1) Block đầy đủ có footer END — DOTALL để khớp qua nhiều dòng, non-greedy + backref
+#     \1 để không nuốt qua block PEM kế tiếp (vd 2 key liên tiếp trong 1 output).
+_PRIVATE_KEY_BLOCK = re.compile(
+    r"-----BEGIN ([A-Z ]*PRIVATE KEY)-----.*?-----END \1-----",
+    re.DOTALL,
+)
+# (2) Fallback khi output bị cắt (head -c, log phân trang, exec cap size) → mất
+#     footer END. Heuristic: có header BEGIN...PRIVATE KEY nhưng không tìm được
+#     END tương ứng (vì (1) đã xử lý hết các block trọn vẹn) ⇒ coi toàn bộ phần
+#     còn lại sau header là thân base64 của key bị lộ, redact tới hết chuỗi.
+_PRIVATE_KEY_TRUNCATED = re.compile(
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*",
+    re.DOTALL,
+)
 
 # Dấu hiệu prompt-injection trên nội dung từ ngoài (web/file).
 _INJECTION = re.compile(
@@ -27,21 +49,34 @@ _INJECTION = re.compile(
 )
 
 
-def redact(text: str) -> str:
-    for name, pat in _SECRET_PATTERNS:
-        if name == "pw_in_dsn":
-            text = pat.sub(r"\1[REDACTED]\2", text)
-        else:
-            text = pat.sub("[REDACTED]", text)
+def _redact_private_keys(text: str) -> str:
+    """Redact PEM private key: block trọn vẹn trước, phần bị cắt (thiếu footer) sau."""
+    text = _PRIVATE_KEY_BLOCK.sub("[REDACTED]", text)
+    text = _PRIVATE_KEY_TRUNCATED.sub("[REDACTED]", text)
     return text
 
 
+def redact(text: str) -> str:
+    text = _redact_private_keys(text)
+    for _name, pat, repl in _SECRET_PATTERNS:
+        text = pat.sub(repl, text)
+    return text
+
+
+def _redact_value(value: Any) -> Any:  # noqa: ANN401 — giá trị span attrs là JSON-like động
+    """Redact đệ quy: dict/list lồng bao nhiêu cấp cũng bị quét (P1-7)."""
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, dict):
+        return {k: _redact_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_value(v) for v in value]
+    return value
+
+
 def redact_attrs(attrs: dict) -> dict:
-    """Redact mọi giá trị chuỗi trong span attrs (RG1-9)."""
-    out = {}
-    for k, v in attrs.items():
-        out[k] = redact(v) if isinstance(v, str) else v
-    return out
+    """Redact đệ quy mọi giá trị chuỗi trong span attrs, kể cả dict/list lồng (RG1-9, P1-7)."""
+    return {k: _redact_value(v) for k, v in attrs.items()}
 
 
 def scan_injection(text: str) -> bool:

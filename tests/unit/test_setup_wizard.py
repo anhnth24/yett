@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import stat
+import subprocess
+import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
+from yett.secrets import file_store
 from yett.secrets.file_store import FileSecretStore
 from yett.setup_wizard import Answers, build_config, find_provider, run_wizard
 
@@ -36,14 +41,58 @@ def test_find_provider() -> None:
 
 
 def test_file_secret_store(tmp_path: Path) -> None:
+    """[P1-13] File secret phải owner-only. POSIX: chmod 600 qua os.stat. Windows: os.chmod
+    không map sang NTFS DACL nên verify ACL THẬT qua `icacls` (máy Windows thật, không mock)."""
     store = FileSecretStore(tmp_path / "secrets")
     store.set("llm_key", "abc123")
     assert store.get("llm_key") == "abc123"
     assert store.has("llm_key")
-    # quyền file 600
-    import stat
-    mode = (tmp_path / "secrets" / "llm_key").stat().st_mode
-    assert stat.S_IMODE(mode) == 0o600
+    secret_path = tmp_path / "secrets" / "llm_key"
+
+    if sys.platform == "win32":
+        result = subprocess.run(
+            ["icacls", str(secret_path)], capture_output=True, text=True, check=True,
+        )
+        acl_output = result.stdout
+        assert "(I)" not in acl_output, f"vẫn còn ACE kế thừa (chưa /inheritance:r): {acl_output}"
+        assert ":(F)" in acl_output, f"không thấy Full Control owner-only: {acl_output}"
+        for leaked_group in ("Everyone", "BUILTIN\\Users", "Authenticated Users"):
+            assert leaked_group not in acl_output, f"ACL vẫn cho phép {leaked_group}: {acl_output}"
+    else:
+        mode = secret_path.stat().st_mode
+        assert stat.S_IMODE(mode) == 0o600
+
+
+def test_file_secret_store_acl_failure_warns_loudly_not_silent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """[P1-13] icacls/chmod lỗi KHÔNG được nuốt im lặng (`except OSError: pass` cũ) —
+    phải cảnh báo to qua log + stderr. Set vẫn thành công (không chặn wizard)."""
+    caplog.set_level("WARNING", logger="yett.secrets.file_store")
+
+    if sys.platform == "win32":
+        def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+            if cmd[0] == "whoami":
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout='"D\\u","S-1-5-21-1-2-3-1001"\n', stderr="",
+                )
+            raise subprocess.CalledProcessError(1, cmd, stderr="access denied (giả lập test)")
+
+        monkeypatch.setattr(file_store.subprocess, "run", fake_run)
+    else:
+        monkeypatch.setattr(sys, "platform", "linux")
+
+        def fake_chmod(path: object, mode: int) -> None:
+            raise OSError("permission denied (giả lập test)")
+
+        monkeypatch.setattr(file_store.os, "chmod", fake_chmod)
+
+    store = FileSecretStore(tmp_path / "secrets")
+    store.set("llm_key", "abc123")  # không raise — ghi vẫn thành công
+
+    assert store.get("llm_key") == "abc123"
+    warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert any("CẢNH BÁO" in w for w in warnings), f"không thấy cảnh báo to: {warnings}"
 
 
 def test_run_wizard_end_to_end(tmp_path: Path) -> None:
