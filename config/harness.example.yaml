@@ -75,6 +75,18 @@ projects:
 skills_enabled: true
 subagents_enabled: true
 
+# ---- Server SSH (deploy UAT, đọc log). Host lạ → deny; xóa file → cấm tuyệt đối ----
+# remote:
+#   hosts:
+#     uat-app-1:
+#       address: 10.0.0.10
+#       user: deploy
+#       auth: keyfile:uat_key        # đặt private key vào secrets/uat_key
+#       tier: uat                    # uat cho deploy; restricted chỉ đọc
+#       log_paths: [/var/log/app/*.log]
+#       deploy_script: /opt/deploy/run.sh   # lệnh deploy DUY NHẤT được phép (phải duyệt)
+# Cần cài: pip install asyncssh
+
 # ---- Sandbox ----
 sandbox:
   backend: docker            # docker (Docker Desktop qua WSL2) | local (dev, ít cô lập hơn)

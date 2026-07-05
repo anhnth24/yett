@@ -28,6 +28,7 @@ from yett.tools.registry import Registry
 from yett.sandbox.base import Sandbox
 from yett.sandbox.local import LocalSandbox
 from yett.skills.loader import SkillLoader
+from yett.tools.remote.hostprofile import HostRegistry
 
 
 def build_app(
@@ -90,7 +91,12 @@ class App:
         if cfg.search is not None and secrets is not None:
             self._wire_search()
 
-        self.gate = BasicGate(cfg.security)
+        # Remote ops (SSH/VPN/log): host registry cần trước khi tạo Gate (Gate phân lớp theo host).
+        self.host_registry: HostRegistry | None = None
+        if cfg.remote.hosts:
+            self._wire_remote()
+
+        self.gate = BasicGate(cfg.security, hosts=self.host_registry)
         # Hooks: rỗng mặc định (điểm cắm sẵn; nạp hook từ config sau).
         from yett.hooks.runner import HookRunner
         self.hooks = HookRunner([])
@@ -137,6 +143,24 @@ class App:
     def _wire_search(self) -> None:
         # web_search cần search backend cụ thể (nối sau); đăng ký khi có.
         return None
+
+    def _wire_remote(self) -> None:
+        from yett.tools.remote.hostprofile import HostProfile
+        from yett.tools.remote.ssh_backend import AsyncSSHBackend
+        from yett.tools.remote.ssh_exec import LogReadTool, SshExecTool
+
+        hosts = {}
+        for name, h in self.cfg.remote.hosts.items():
+            addr = f"{h.user}@{h.address}" if h.user else h.address
+            hosts[name] = HostProfile(
+                address=addr, auth=h.auth, vpn_required=h.vpn_required, tier=h.tier,
+                log_paths=h.log_paths, deploy_script=h.deploy_script,
+            )
+        self.host_registry = HostRegistry(hosts)
+        backend = AsyncSSHBackend()
+        # VPN CLI runner (openvpn/openfortivpn) chưa nối → vpn=None; SSH vẫn chạy nếu không cần VPN.
+        self.registry.register(SshExecTool(self.host_registry, backend, self._secrets, vpn=None))
+        self.registry.register(LogReadTool(self.host_registry, backend, self._secrets, vpn=None))
 
     def _wire_subagents(self) -> None:
         from yett.subagent.delegate import DelegateCtx, DelegateTool

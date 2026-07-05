@@ -52,7 +52,7 @@ disallow_incomplete_defs = false
 files = ["src/yett"]
 
 [[tool.mypy.overrides]]
-module = ["sqlglot.*", "yaml.*", "croniter.*"]
+module = ["sqlglot.*", "yaml.*", "croniter.*", "asyncssh.*", "psycopg.*", "pymysql.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

@@ -34,7 +34,7 @@ def _sqlite_query(dsn: str, sql: str) -> list[dict]:
 
 async def _pg_query(dsn: str, sql: str) -> list[dict]:
     try:
-        import psycopg  # type: ignore
+        import psycopg
     except ImportError as e:
         raise RuntimeError("cần cài 'psycopg' để query PostgreSQL") from e
     # L2: session read-only
@@ -48,8 +48,8 @@ async def _pg_query(dsn: str, sql: str) -> list[dict]:
 
 def _mysql_query(dsn: str, sql: str) -> list[dict]:
     try:
-        import pymysql  # type: ignore
-        from pymysql.cursors import DictCursor  # type: ignore
+        import pymysql
+        from pymysql.cursors import DictCursor
     except ImportError as e:
         raise RuntimeError("cần cài 'pymysql' để query MySQL") from e
     from urllib.parse import urlparse

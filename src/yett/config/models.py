@@ -66,12 +66,31 @@ class SearchCfg(BaseModel):
     # search backend cụ thể nối sau; hiện giữ tên key để không lộ giá trị
 
 
+class HostCfg(BaseModel):
+    """Server SSH khai báo trước (spec P2 §2.1). Host lạ → deny (không SSH đại)."""
+
+    address: str
+    auth: str = ""  # "keyfile:<secret_name>" — key qua secret store
+    port: int = 22
+    user: str = ""
+    vpn_required: str | None = None
+    tier: Literal["uat", "restricted"] = "uat"
+    log_paths: list[str] = Field(default_factory=list)
+    deploy_script: str | None = None
+
+
+class RemoteCfg(BaseModel):
+    hosts: dict[str, HostCfg] = Field(default_factory=dict)
+    vpn_profiles: dict[str, dict] = Field(default_factory=dict)  # name -> {cred_secret: <tên>}
+
+
 class HarnessCfg(BaseModel):
     provider: ProviderCfg
     fallback_provider: ProviderCfg | None = None
     budget: BudgetCfg = Field(default_factory=BudgetCfg)
     projects: dict[str, ProjectCfg] = Field(default_factory=dict)
     databases: dict[str, DbProfileCfg] = Field(default_factory=dict)
+    remote: RemoteCfg = Field(default_factory=RemoteCfg)
     search: SearchCfg | None = None
     egress: EgressCfg = Field(default_factory=EgressCfg)
     sandbox: SandboxCfg = Field(default_factory=SandboxCfg)
