@@ -10,18 +10,15 @@
 
 ```bash
 pip install -e ".[dev]"
-yett demo                          # turn agent offline (FakeProvider), không cần key
-pytest -q                          # 167 test
-
-# Dùng thật với GLM 5.2 hoặc MiniMax M3 (đều OpenAI-compatible):
-cp config/harness.example.yaml config/harness.yaml   # sửa provider + projects
-export YETT_SECRET_LLM_KEY="<api-key>"
-yett chat "báo cáo tiến độ tuần này"
+yett demo            # turn agent offline (FakeProvider), không cần key
+yett setup           # wizard cài đặt từng bước: provider → model → key → project
+yett chat "báo cáo tiến độ tuần này của các project"
 yett usage --by provider --state state
+pytest -q            # 174 test
 ```
 
-Cài đặt đầy đủ trên WSL2 + Docker Desktop: xem [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md).
-Model đã cấu hình sẵn: **GLM 5.2** (`glm-5.2`) hoặc **MiniMax M3** (`MiniMax-M3`) — đổi bằng cách sửa `config/harness.yaml`, không đụng code.
+**Hướng dẫn cài đặt đầy đủ (WSL2 + Docker Desktop): [`INSTALL.md`](INSTALL.md).**
+Chọn 1 trong 10+ model top (GLM 5.2, MiniMax M3, DeepSeek, Gemini, GPT-5.5, Claude, Grok, Qwen, Mistral) ngay trong wizard hoặc sửa `config/harness.yaml` — không đụng code. Giá thật ở [`config/pricing.yaml`](config/pricing.yaml).
 
 ## Trạng thái implement
 

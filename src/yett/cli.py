@@ -23,6 +23,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"yett {__version__}")
     sub = p.add_subparsers(dest="command")
 
+    setup = sub.add_parser("setup", help="wizard cài đặt từng bước (provider, key, project)")
+    setup.add_argument("--config", default="config/harness.yaml")
+
     sub.add_parser("demo", help="chạy một turn mẫu offline (FakeProvider)")
 
     chat = sub.add_parser("chat", help="hội thoại với agent (cần config + provider)")
@@ -41,6 +44,22 @@ def build_parser() -> argparse.ArgumentParser:
     usage.add_argument("--by", choices=["provider", "model", "day"], default="provider")
     usage.add_argument("--state", default="state")
     return p
+
+
+def _cmd_setup(args) -> int:
+    from yett.secrets.file_store import FileSecretStore
+    from yett.setup_wizard import run_wizard
+
+    cfg_path = Path(args.config)
+    store = FileSecretStore()
+    run_wizard(
+        prompt=lambda msg: input(msg),
+        emit=lambda msg: print(msg),
+        config_path=cfg_path,
+        secret_setter=store.set,
+        existing_config=cfg_path.exists(),
+    )
+    return 0
 
 
 def _cmd_demo() -> int:
@@ -112,6 +131,8 @@ def main(argv: list[str] | None = None) -> int:
     if not args.command:
         build_parser().print_help()
         return 0
+    if args.command == "setup":
+        return _cmd_setup(args)
     if args.command == "demo":
         return _cmd_demo()
     if args.command == "traces":
@@ -125,15 +146,17 @@ def main(argv: list[str] | None = None) -> int:
 
 def _cmd_chat(args) -> int:
     from yett.app import build_app
+    from yett.config.loader import load_config
     from yett.errors import YettError
-    from yett.secrets.backends import EnvSecretStore
+    from yett.secrets.resolve import build_secret_store
 
     if not Path(args.config).exists():
-        print(f"[yett] chưa có config {args.config}. Copy từ config/harness.example.yaml.", file=sys.stderr)
+        print(f"[yett] chưa có config {args.config}. Chạy 'yett setup' để tạo.", file=sys.stderr)
         return 1
     pricing = args.pricing if Path(args.pricing).exists() else None
     try:
-        app = build_app(args.config, EnvSecretStore(), state_dir=Path(args.state), pricing_path=pricing)
+        secrets = build_secret_store(load_config(args.config).secret_backend)
+        app = build_app(args.config, secrets, state_dir=Path(args.state), pricing_path=pricing)
     except YettError as e:
         print(f"[yett] lỗi khởi động: {e}", file=sys.stderr)
         return 1
