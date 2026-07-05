@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from yett.app import App
 
 
-def make_handler(app: "App") -> type[BaseHTTPRequestHandler]:
+def make_handler(app: "App", center=None) -> type[BaseHTTPRequestHandler]:
     chat_lock = threading.Lock()  # serialize turn (single-user local)
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):  # tắt log ồn ra stderr
@@ -45,18 +45,31 @@ def make_handler(app: "App") -> type[BaseHTTPRequestHandler]:
                 for t in app.spanstore.list_traces(limit=1000):
                     spans.extend(app.spanstore.get_trace(t["trace_id"]))
                 self._json(200, {"rows": cost.aggregate(spans, by="provider")})
+            elif self.path.startswith("/api/traces"):
+                self._json(200, {"traces": app.spanstore.list_traces(limit=50)})
+            elif self.path == "/api/pending":
+                self._json(200, {"pending": center.list_pending() if center else []})
             else:
                 self._json(404, {"error": "not found"})
 
         def do_POST(self) -> None:  # noqa: N802
-            if self.path != "/api/chat":
-                self._json(404, {"error": "not found"})
-                return
             length = int(self.headers.get("Content-Length", 0))
             try:
                 data = json.loads(self.rfile.read(length) or b"{}")
             except json.JSONDecodeError:
                 self._json(400, {"error": "JSON không hợp lệ"})
+                return
+
+            if self.path == "/api/approve":
+                if center is None:
+                    self._json(404, {"error": "approval không bật"})
+                    return
+                ok = center.resolve(data.get("id", ""), bool(data.get("approved")))
+                self._json(200 if ok else 404, {"ok": ok})
+                return
+
+            if self.path != "/api/chat":
+                self._json(404, {"error": "not found"})
                 return
             msg = (data.get("message") or "").strip()
             if not msg:
@@ -74,15 +87,20 @@ def make_handler(app: "App") -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
-def serve(app: "App", *, host: str = "127.0.0.1", port: int = 8765) -> ThreadingHTTPServer:
-    httpd = ThreadingHTTPServer((host, port), make_handler(app))
-    return httpd
+def serve(app: "App", *, host: str = "127.0.0.1", port: int = 8765, center=None) -> ThreadingHTTPServer:
+    """Tạo server. Nếu truyền ApprovalCenter → gắn approver để UI duyệt lệnh nhạy cảm."""
+    if center is not None:
+        app.set_approver(center.request)
+    return ThreadingHTTPServer((host, port), make_handler(app, center))
 
 
 def serve_forever(
     app: "App", *, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = False
 ) -> None:
-    httpd = serve(app, host=host, port=port)
+    from yett.approvals import ApprovalCenter
+
+    center = ApprovalCenter(default_timeout=float(app.cfg.security.approval_timeout_sec))
+    httpd = serve(app, host=host, port=port, center=center)
     url = f"http://{host}:{port}"
     print(f"[yett] Web UI: {url}  (Ctrl+C để dừng)")
     if open_browser:

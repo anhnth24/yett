@@ -123,6 +123,12 @@ Use-case đầu tiên: trợ lý DevOps cá nhân chạy local — quản lý pr
 - **[v0.3] Analytics on-prem** — usage/cost/success-rate per session đọc từ chính span store (kiểu `/usage`, `/insights`), không thu thập thêm dữ liệu.
 - **[v0.3] Compliance layer VN/gov** — audit log append-only cho mọi quyết định Gate/approval/ghi memory, phân loại dữ liệu, retention policy theo yêu cầu khách. *(tự thiết kế 100% — không có nguồn tham chiếu)*
 
+### Giao diện web (app)
+- **Web UI local** (`yett serve --open`) — khung chat trong trình duyệt (localhost), tái dùng toàn bộ core.
+- **Duyệt approval trên giao diện** — khi agent cần chạy lệnh nhạy cảm (deploy, tool cần duyệt), UI hiện nút **Duyệt / Từ chối** kèm nguyên văn lệnh; turn chờ quyết định (timeout → từ chối sạch). Không cần vào terminal.
+- **Tab Traces / Cost** — xem chi phí theo provider + danh sách trace gần đây ngay trên UI.
+- Đóng gói `yett.exe` (double-click chạy, không cần Python) — xem [`packaging/BUILD_EXE.md`](packaging/BUILD_EXE.md).
+
 ### Kênh giao tiếp
 - **[v0.1] CLI/TUI** — kênh duy nhất của MVP.
 - **[v0.3] Telegram → Zalo Bot API** — theo thứ tự độ khó đã verify. **Chủ đích không làm:** Zalo Personal (phụ thuộc thư viện unofficial reverse-engineered, rủi ro ToS) và WeChat (plugin đóng của bên thứ ba, không portable).

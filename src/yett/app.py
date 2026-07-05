@@ -170,6 +170,10 @@ class App:
         parent = _MainCtx(session_key, set(self.registry.names()))
         return await self.loop.run_turn(ctx, session_key=session_key, turn_id=tid, session_ctx=parent)
 
+    def set_approver(self, approver) -> None:
+        """Gắn approver (vd web ApprovalCenter.request) — turn sẽ hỏi duyệt khi Gate cần."""
+        self.loop._approver = approver
+
     def close(self) -> None:
         self.spanstore.close()
         self.checkpoints.close()
