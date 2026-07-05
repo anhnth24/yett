@@ -1,9 +1,15 @@
-"""LocalSandbox — chạy lệnh bằng subprocess (dev/test), cross-platform.
+"""LocalSandbox — chạy lệnh bằng subprocess trực tiếp trên host (CHỈ dev/test), cross-platform.
 
-CẢNH BÁO: không cô lập như Docker. Production dùng DockerSandbox; LocalSandbox chỉ
-cho dev/test và bị Policy Gate chặn trong build production (config `sandbox.backend`).
-Trong môi trường không có Docker daemon (vd CI của repo), LocalSandbox cho phép test
-được toàn bộ wiring Gate→Registry→Sandbox→Filters mà không cần daemon.
+CẢNH BÁO: KHÔNG cô lập — không network isolation, không filesystem containment, không giới
+hạn tài nguyên; lệnh chạy thẳng trên máy host. CHỈ dùng khi config khai `sandbox.backend:
+local` (mặc định production là `docker`). App tự chọn LocalSandbox khi cfg khai backend=local;
+không có Policy Gate hay cơ chế runtime nào khác "hạ cấp" từ Docker về Local — nếu backend
+là `docker` mà Docker/daemon thiếu, App fail-closed (từ chối khởi động), KHÔNG rơi về
+LocalSandbox (xem `yett.sandbox.docker.probe_docker`, `App.__init__`).
+
+Trong môi trường không có Docker daemon (vd máy dev, CI của repo), LocalSandbox cho phép test
+được toàn bộ wiring Gate→Registry→Sandbox→Filters mà không cần daemon — nhưng bản thân exec
+qua LocalSandbox KHÔNG được coi là an toàn để chạy lệnh không tin cậy.
 
 Cross-platform: nếu caller truyền lệnh dạng ["sh","-c", cmd] mà máy là Windows và
 không có sh trong PATH, tự chuyển sang ["cmd","/c", cmd]. cmdguard đã chặn cả lệnh

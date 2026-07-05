@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 @dataclass
@@ -94,8 +95,33 @@ def _version(c: Check) -> str:
         return "?"
 
 
-def run_doctor(emit=print) -> int:
-    """In trạng thái từng công cụ + cách cài phần thiếu. Trả số công cụ BẮT BUỘC còn thiếu."""
+def _docker_config_problem(config_path: str | Path) -> str | None:
+    """Đọc config (nếu tồn tại) để biết `sandbox.backend` thật của người dùng. Docker trong
+    `CHECKS` ở trên luôn là "tùy chọn" (vì backend có thể là `local`) — nhưng nếu config nói
+    `backend: docker`, Docker KHÔNG còn tùy chọn (App fail-closed khi thiếu). Trả mô tả vấn đề
+    nếu backend=docker mà Docker CLI/daemon chưa sẵn sàng; trả `None` nếu không có config,
+    backend khác docker, config lỗi (đã có `yett setup`/validate báo riêng), hoặc Docker ổn."""
+    p = Path(config_path)
+    if not p.exists():
+        return None
+    try:
+        from yett.config.loader import load_config
+
+        cfg = load_config(p)
+    except Exception:
+        return None
+    if cfg.sandbox.backend != "docker":
+        return None
+    from yett.sandbox.docker import docker_unavailable_reason
+
+    return docker_unavailable_reason()
+
+
+def run_doctor(emit=print, config_path: str | Path = "config/harness.yaml") -> int:
+    """In trạng thái từng công cụ + cách cài phần thiếu. Trả số công cụ BẮT BUỘC còn thiếu.
+
+    Nếu tìm thấy config tại `config_path` khai `sandbox.backend: docker`, kiểm thêm Docker
+    CLI/daemon — lúc đó backend không còn tùy chọn (App fail-closed nếu thiếu)."""
     osk = _os_key()
     emit(f"yett doctor — hệ điều hành: {osk}\n")
     missing_required = 0
@@ -118,6 +144,11 @@ def run_doctor(emit=print) -> int:
             emit(f"  • {c.name}: {cmd}")
             if c.daemon_hint:
                 emit(f"      {c.daemon_hint}")
+    docker_problem = _docker_config_problem(config_path)
+    if docker_problem:
+        emit(f"\n✗ config '{config_path}' khai sandbox.backend=docker nhưng {docker_problem}.")
+        emit("   → 'yett chat'/'yett serve' sẽ TỪ CHỐI khởi động (fail-closed), KHÔNG hạ cấp về host.")
+        missing_required += 1
     if missing_required == 0:
         emit("\n✓ Đủ điều kiện chạy yett (core). Tool tùy chọn cài thêm khi cần.")
     else:

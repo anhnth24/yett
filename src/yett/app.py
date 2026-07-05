@@ -6,7 +6,7 @@ Tách khỏi cli.py để test được. clock/provider injectable → test offl
 from __future__ import annotations
 
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable
 
 from yett.config.models import HarnessCfg
@@ -14,6 +14,7 @@ from yett.core.checkpoint import CheckpointStore
 from yett.core.complexity import ComplexityRouter
 from yett.core.context import assemble_context
 from yett.core.loop import AgentLoop, LoopConfig, TurnResult
+from yett.errors import UserFacingError
 from yett.memory.session import SessionStore
 from yett.memory.workspace import WorkspaceMemory
 from yett.obs.cost import compute_cost
@@ -29,6 +30,7 @@ from yett.tools.builtin.web_fetch import WebFetchTool
 from yett.tools.projects import ProjectScope
 from yett.tools.registry import Registry
 from yett.sandbox.base import Sandbox
+from yett.sandbox.docker import DockerSandbox, probe_docker
 from yett.sandbox.local import LocalSandbox
 from yett.skills.loader import SkillLoader
 from yett.tools.remote.hostprofile import HostRegistry
@@ -37,7 +39,11 @@ from yett.tools.remote.hostprofile import HostRegistry
 def build_app(
     config_path: str | Path, secrets, *, state_dir: Path, pricing_path: str | Path | None = None
 ) -> "App":
-    """Dựng App từ config file thật (dùng cho `yett chat`). Provider build từ factory."""
+    """Dựng App từ config file thật (dùng cho `yett chat`). Provider build từ factory.
+
+    Sandbox KHÔNG dựng ở đây — `App.__init__` là nguồn quyết định duy nhất theo
+    `cfg.sandbox.backend`, để tránh 2 nơi tính mount/host→container cwd lệch nhau. Nếu
+    backend=docker mà Docker thiếu, `App.__init__` raise `UserFacingError` (fail-closed)."""
     from yett.config.loader import load_config, load_pricing
     from yett.provider.factory import build_provider
 
@@ -45,11 +51,50 @@ def build_app(
     provider = build_provider(cfg.provider, secrets)
     fallback = build_provider(cfg.fallback_provider, secrets) if cfg.fallback_provider else None
     pricing = load_pricing(pricing_path) if pricing_path else {}
-    sandbox = LocalSandbox() if cfg.sandbox.backend == "local" else None  # docker dựng riêng khi cần
     return App(
-        cfg, provider, state_dir=state_dir, pricing=pricing, sandbox=sandbox,
+        cfg, provider, state_dir=state_dir, pricing=pricing,
         fallback=fallback, secrets=secrets,
     )
+
+
+_CONTAINER_ROOT = "/workspace"
+
+
+def _project_roots(cfg: HarnessCfg) -> dict[Path, str]:
+    """Ánh xạ workspace_root + mọi project root (host, tuyệt đối) sang path container cố định
+    để mount Docker: `workspace_root` -> `/workspace`; project đăng ký nằm NGOÀI workspace_root
+    -> `/workspace/projects/<name>` (project đã lồng sẵn trong workspace_root dùng chung mount
+    workspace, không mount trùng)."""
+    ws = Path(cfg.workspace_root).resolve()
+    roots: dict[Path, str] = {ws: _CONTAINER_ROOT}
+    for name, proj in cfg.projects.items():
+        root = Path(proj.path).resolve()
+        if root == ws or ws in root.parents:
+            continue
+        roots[root] = f"{_CONTAINER_ROOT}/projects/{name}"
+    return roots
+
+
+def _cwd_mapper(backend: str, roots: dict[Path, str]) -> Callable[[Path], str]:
+    """Hàm map một path HOST (đã qua `ProjectScope.resolve_in_scope`) sang path dùng cho
+    `-w`/`cwd` của sandbox. LocalSandbox chạy thẳng trên host nên giữ nguyên path; DockerSandbox
+    cần path container theo mount đã tính ở `_project_roots` (khớp longest-prefix root trước)."""
+    if backend != "docker":
+        return lambda host_path: str(host_path)
+    ordered = sorted(roots.items(), key=lambda kv: len(kv[0].parts), reverse=True)
+
+    def mapper(host_path: Path) -> str:
+        for host_root, container_root in ordered:
+            if host_path == host_root or host_root in host_path.parents:
+                rel = host_path.relative_to(host_root)
+                if not rel.parts:
+                    return container_root
+                return str(PurePosixPath(container_root, *rel.parts))
+        raise UserFacingError(
+            f"'{host_path}' đã qua scope-check nhưng không khớp mount Docker nào — từ chối"
+        )
+
+    return mapper
 
 
 class App:
@@ -78,9 +123,21 @@ class App:
         self.workspace = WorkspaceMemory(cfg.workspace_root)
         self.complexity = ComplexityRouter(cfg.router)
 
-        sb = sandbox or LocalSandbox()
+        roots = _project_roots(cfg)
+        sb: Sandbox
+        if sandbox is not None:
+            sb = sandbox
+        elif cfg.sandbox.backend == "docker":
+            # Fail-closed: KHÔNG bao giờ hạ cấp âm thầm về host khi backend=docker.
+            probe_docker()
+            sb = DockerSandbox(cfg.sandbox, mounts={str(h): c for h, c in roots.items()})
+        else:
+            sb = LocalSandbox()
         self.registry = Registry()
-        self.registry.register(ExecTool(sb, timeout=cfg.sandbox.timeout_sec))
+        self.registry.register(ExecTool(
+            sb, timeout=cfg.sandbox.timeout_sec,
+            scope=self.scope, to_sandbox_path=_cwd_mapper(cfg.sandbox.backend, roots),
+        ))
         self.registry.register(ReadFileTool(self.scope))
         self.registry.register(WriteFileTool(self.scope))
         self.registry.register(ListDirTool(self.scope))
