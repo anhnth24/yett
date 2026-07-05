@@ -40,6 +40,17 @@ DELETE_CASES = [
     "> /var/log/app.log",           # redirect ghi đè file
     "echo '' > /etc/hostname",
     "cat /dev/null | tee /var/log/app.log",
+    # P0-4: toán tử "&" đơn (background/nối lệnh) trước đây thiếu trong regex split.
+    "ls & rm -rf /data",
+    "echo hi & rm -rf /data",
+    "cat file & rm -rf /data &",
+    # P1-6: redirect không-space + fd-prefix + append + traversal giả trang /tmp.
+    "echo x>/etc/hostname",           # không-space
+    "echo hi 1>/etc/x",               # fd-prefix (stdout)
+    "echo hi 2>/etc/x",               # fd-prefix (stderr)
+    "echo hi >> /etc/hostname",       # append
+    ">/tmp/../etc/passwd",            # traversal giả trang /tmp
+    "echo hi > /tmp/../../etc/shadow",
 ]
 
 
@@ -99,3 +110,46 @@ def test_unparseable_is_delete_failclosed() -> None:
     # quote không đóng → shlex lỗi → fail-closed (coi như delete)
     cls, _ = classify('rm "unterminated')
     assert cls == CmdClass.DELETE_FILE
+
+
+# --- P1-6: redirect target được miễn trừ (/dev/null, /tmp thật) KHÔNG bị coi là xóa file ---
+REDIRECT_SAFE_CASES = [
+    "echo hi > /dev/null",
+    "echo hi 2>/dev/null",
+    "echo hi > /tmp/output.log",
+    "echo hi >> /tmp/output.log",
+    "echo hi 1>/tmp/out.log",
+]
+
+
+@pytest.mark.parametrize("cmd", REDIRECT_SAFE_CASES)
+def test_redirect_to_devnull_or_real_tmp_not_delete(cmd: str) -> None:
+    cls, _ = classify(cmd)
+    assert cls != CmdClass.DELETE_FILE, f"redirect an toàn bị chặn nhầm: {cmd}"
+
+
+# --- fd-duplication (2>&1, 1>&2) KHÔNG phải redirect ghi file — không được coi là xóa/readonly-disqualify ---
+def test_fd_duplication_not_delete_and_stays_readonly() -> None:
+    cls, _ = classify("docker logs mycontainer 2>&1")
+    assert cls != CmdClass.DELETE_FILE
+    dec = gate_ssh("docker logs mycontainer 2>&1")
+    assert dec.verdict == "allow", dec.reason
+
+
+# --- Denylist (P1 phụ): anchor theo trailing boundary — không false-deny lệnh git hợp lệ có
+# subcommand ghép dấu "-" trùng tiền tố với từ khoá nguy hiểm (vd "format-patch").
+def test_denylist_git_format_patch_not_false_denied() -> None:
+    from yett.security.denylist import check_exec
+
+    assert check_exec("git format-patch -1 HEAD") is None
+    assert check_exec("git format-patch --stdout HEAD~3") is None
+
+
+def test_denylist_wrapped_delete_still_blocked() -> None:
+    # Đảm bảo sửa false-positive không làm mất khả năng bắt lệnh xóa đứng sau wrapper —
+    # BasicGate.exec chỉ dùng denylist (không bóc wrapper như cmdguard).
+    from yett.security.denylist import check_exec
+
+    for cmd in ["sudo rm -rf /", "time rm -rf /data", "rm -rf /data", "format C:"]:
+        dec = check_exec(cmd)
+        assert dec is not None and dec.verdict == "deny", f"KHÔNG chặn được: {cmd}"

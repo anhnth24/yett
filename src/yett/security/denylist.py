@@ -9,11 +9,21 @@ import re
 
 from yett.security.gate import Decision
 
+# Ranh giới KẾT THÚC từ khoá nguy hiểm: không phải word-char/hyphen theo sau.
+# `\b` đơn thuần coi "-" là điểm ngắt từ, nên "format-patch" (git subcommand hợp lệ, không
+# phải "format" + đối số) vẫn khớp `format\b` → false-deny. Yêu cầu KHÔNG có "-" nối tiếp thì
+# giữ nguyên khả năng bắt "rm"/"del" khi đứng sau wrapper (vd "sudo rm -rf /", "time rm x") —
+# ranh giới ĐẦU lệnh cố tình giữ nguyên (kể cả khoảng trắng) vì đây là tầng hardline cuối cùng
+# của BasicGate cho tool "exec" (không có bước bóc wrapper như cmdguard).
+_KEYWORD_END = r"(?![\w-])"
+
 # Lệnh exec hardline POSIX (Linux/macOS) — áp cho tool exec local + nền cho SSH
 _DENY_EXEC_POSIX = re.compile(
     r"""
     (^|[\s;&|`$(])            # ranh giới lệnh
-    (rm|rmdir|unlink|shred|mkfs|dd)\b   # binary phá hoại
+    (rm|rmdir|unlink|shred|mkfs|dd)"""
+    + _KEYWORD_END
+    + r"""   # binary phá hoại
     | :\(\)\s*\{              # fork bomb
     | \bchmod\s+-R\s+777\s+/  # nới quyền toàn hệ thống
     """,
@@ -28,9 +38,11 @@ _DENY_EXEC_WIN = re.compile(
     ( del | erase                       # xóa file
     | rd | rmdir                        # xóa thư mục (rd /s xoá đệ quy)
     | remove-item | ri | rm | del       # PowerShell alias
-    | format                            # format ổ
+    | format                            # format ổ — KHÔNG khớp khi nối "-" (vd git format-patch)
     | clear-content                     # xoá nội dung file
-    ) \b
+    )"""
+    + _KEYWORD_END
+    + r"""
     | \bfsutil\b
     | \bdiskpart\b
     """,
