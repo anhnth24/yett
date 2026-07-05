@@ -11,6 +11,7 @@ from typing import Callable
 
 from yett.config.models import HarnessCfg
 from yett.core.checkpoint import CheckpointStore
+from yett.core.complexity import ComplexityRouter
 from yett.core.context import assemble_context
 from yett.core.loop import AgentLoop, LoopConfig, TurnResult
 from yett.memory.session import SessionStore
@@ -21,7 +22,7 @@ from yett.provider.base import ChatResult, Provider
 from yett.provider.failover import FailoverRouter
 from yett.security.basic_gate import BasicGate
 from yett.security.filters import redact_attrs
-from yett.tools.builtin.codenav import GrepTool, ListDirTool
+from yett.tools.builtin.codenav import GrepTool, ListDirTool, SearchTool
 from yett.tools.builtin.exec import ExecTool
 from yett.tools.builtin.files import ReadFileTool, WriteFileTool
 from yett.tools.builtin.web_fetch import WebFetchTool
@@ -75,6 +76,7 @@ class App:
         self.sessions = SessionStore(state_dir / "sessions.db")
         self.scope = ProjectScope(cfg.workspace_root, {n: p.path for n, p in cfg.projects.items()})
         self.workspace = WorkspaceMemory(cfg.workspace_root)
+        self.complexity = ComplexityRouter(cfg.router)
 
         sb = sandbox or LocalSandbox()
         self.registry = Registry()
@@ -83,6 +85,7 @@ class App:
         self.registry.register(WriteFileTool(self.scope))
         self.registry.register(ListDirTool(self.scope))
         self.registry.register(GrepTool(self.scope))
+        self.registry.register(SearchTool(self.scope))
         if fetcher is not None:
             self.registry.register(WebFetchTool(cfg.egress.allowlist, fetcher))
 
@@ -189,6 +192,7 @@ class App:
         tool_desc = {
             "exec": "chạy lệnh trong sandbox", "read_file": "đọc file", "write_file": "ghi file",
             "list_dir": "liệt kê cây thư mục (trong scope)", "grep": "tìm regex trong source (trong scope)",
+            "search": "gộp nhiều grep/read/list trong 1 lần (nhanh, ít vòng)",
             "web_fetch": "tải URL (qua allowlist)", "web_search": "tìm kiếm web",
             "db_query": "query DB CHỈ ĐỌC (không sửa/xóa)", "db_config": "quản lý profile DB",
             "ssh_exec": "chạy lệnh trên server qua SSH (deploy phải duyệt; cấm xóa file)",
@@ -210,6 +214,15 @@ class App:
             if menu:
                 lines.append("\nSkill (gọi load_skill để lấy hướng dẫn):")
                 lines += [f"- {s['name']}: {s['description']}" for s in menu]
+        lines.append(
+            "\nCÁCH LÀM VIỆC (Sources First):"
+            "\n- Ưu tiên tìm bằng chứng THẬT trước khi trả lời: dùng grep/list_dir/read_file trên"
+            " project, log_read trên server, db_query để xem dữ liệu."
+            "\n- Chỉ khẳng định điều tra được từ nguồn; luôn trích đường dẫn file:dòng hoặc tên"
+            " bảng/host làm dẫn chứng."
+            "\n- Không thấy bằng chứng thì nói rõ 'chưa tìm thấy / không kiểm chứng được', KHÔNG bịa."
+            " Kiến thức nền có thể lỗi thời — nguồn trong project mới là chuẩn."
+        )
         lines.append("\nGiới hạn an toàn: KHÔNG xóa file OS trên server, KHÔNG ALTER/DELETE/UPDATE DB "
                      "trừ khi được duyệt tường minh. Khi bị chặn, giải thích và đề xuất cách an toàn.")
         return "\n".join(lines)
@@ -224,9 +237,13 @@ class App:
         )
         ctx = assemble_context(system, message, history=history)
         tid = turn_id or f"turn-{int(self._clock()*1000)}"
+        # Complexity router: câu dễ → ít vòng lặp (tiết kiệm chi phí); câu khó → nhiều vòng.
+        max_iter = self.complexity.classify(message).max_iterations if self.cfg.router.enabled else None
         # session_ctx mang allowed_tools = tất cả (cho phép delegate ở cấp cha)
         parent = _MainCtx(session_key, set(self.registry.names()))
-        res = await self.loop.run_turn(ctx, session_key=session_key, turn_id=tid, session_ctx=parent)
+        res = await self.loop.run_turn(
+            ctx, session_key=session_key, turn_id=tid, session_ctx=parent, max_iterations=max_iter
+        )
         # Ghi lượt vào lịch sử (chỉ khi turn xong bình thường, có nội dung trả lời).
         if res.status == "done" and res.text:
             self.sessions.record_turn(session_key, message, res.text, ts=self._clock())

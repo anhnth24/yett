@@ -157,14 +157,42 @@ async def test_cancel_before_tool(tmp_path) -> None:
 
 
 async def test_max_iterations(tmp_path) -> None:
-    # provider luôn trả tool_call → không bao giờ end_turn → chạm trần
+    # provider luôn trả tool_call (args KHÁC nhau → không kích anti-loop lặp) → cạn budget.
+    # Bước cuối bị ép trả lời (reserve_final_steps) nhưng status = max_iterations.
     tool = _CountingTool()
-    script = [tool_result(f"c{i}", "sideeffect", {}) for i in range(10)]
+    script = [tool_result(f"c{i}", "sideeffect", {"n": i}) for i in range(10)]
     loop, store, ckpt, _ = _build(script, tool=tool, tmp_path=tmp_path)
     ctx = assemble_context("sys", "loop mãi")
     res = await loop.run_turn(ctx, session_key="s1", turn_id="t1")
     assert res.status == "max_iterations"
     assert res.iterations == 5
+    assert tool.runs == 4  # 4 bước làm tool + 1 bước cuối ép trả lời (reserve)
+    store.close(); ckpt.close()
+
+
+async def test_antiloop_repeated_tool_forces_answer(tmp_path) -> None:
+    # provider lặp lại y hệt một tool-call → anti-loop ép trả lời sớm (không cạn budget).
+    tool = _CountingTool()
+    script = [tool_result(f"c{i}", "sideeffect", {}) for i in range(10)]
+    loop, store, ckpt, _ = _build(script, tool=tool, tmp_path=tmp_path)
+    ctx = assemble_context("sys", "kẹt loop")
+    res = await loop.run_turn(ctx, session_key="s1", turn_id="t1")
+    assert res.status == "done"  # dừng có chủ đích, không phải cạn budget
+    assert tool.runs == 3  # dừng ở ngưỡng lặp (force_text_after_repeats=3)
+    spans = store.get_trace(res.trace_id)
+    assert any(s["name"] == "forced_text_only" for s in spans)
+    store.close(); ckpt.close()
+
+
+async def test_router_caps_iterations(tmp_path) -> None:
+    # max_iterations override < cfg → siết số vòng (complexity router).
+    tool = _CountingTool()
+    script = [tool_result(f"c{i}", "sideeffect", {"n": i}) for i in range(10)]
+    loop, store, ckpt, _ = _build(script, tool=tool, tmp_path=tmp_path)
+    ctx = assemble_context("sys", "câu dễ")
+    res = await loop.run_turn(ctx, session_key="s1", turn_id="t1", max_iterations=2)
+    assert res.iterations == 2  # bị siết còn 2 vòng
+    assert tool.runs == 1  # 1 tool + 1 bước ép trả lời
     store.close(); ckpt.close()
 
 

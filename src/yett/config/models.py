@@ -25,6 +25,20 @@ class BudgetCfg(BaseModel):
     monthly_cost_alert_usd: float | None = None
 
 
+class RouterCfg(BaseModel):
+    """Complexity router: phân loại độ khó câu hỏi → giới hạn số vòng lặp (tiết kiệm chi phí).
+
+    Câu dễ không tiêu hết budget; câu khó mới được nhiều vòng. Heuristic (không tốn thêm
+    LLM call), deterministic, chạy offline được."""
+
+    enabled: bool = True
+    # số vòng lặp tối đa theo mức độ (bị chặn trên bởi budget.max_loop_iterations)
+    trivial_steps: int = 2
+    simple_steps: int = 4
+    moderate_steps: int = 8
+    complex_steps: int = 20
+
+
 class ProjectCfg(BaseModel):
     path: Path
 
@@ -88,6 +102,7 @@ class HarnessCfg(BaseModel):
     provider: ProviderCfg
     fallback_provider: ProviderCfg | None = None
     budget: BudgetCfg = Field(default_factory=BudgetCfg)
+    router: RouterCfg = Field(default_factory=RouterCfg)
     projects: dict[str, ProjectCfg] = Field(default_factory=dict)
     databases: dict[str, DbProfileCfg] = Field(default_factory=dict)
     remote: RemoteCfg = Field(default_factory=RemoteCfg)

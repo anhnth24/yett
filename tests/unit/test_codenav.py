@@ -6,7 +6,7 @@ import asyncio
 from pathlib import Path
 
 from yett.errors import UserFacingError
-from yett.tools.builtin.codenav import GrepTool, ListDirTool
+from yett.tools.builtin.codenav import GrepTool, ListDirTool, SearchTool
 from yett.tools.projects import ProjectScope
 
 
@@ -84,3 +84,47 @@ def test_grep_bad_regex_rejected(tmp_path: Path) -> None:
         assert False
     except UserFacingError:
         pass
+
+
+def test_search_batches_grep_and_read(tmp_path: Path) -> None:
+    root = _mkproj(tmp_path)
+    tool = SearchTool(_scope(root))
+    args = {
+        "grep": [{"pattern": "handleOrder", "path": str(root), "glob": "*.go"}],
+        "read": [str(root / "README.md")],
+        "list": [str(root / "src")],
+    }
+    tool.validate(args)
+    res = asyncio.run(tool.run(args, _Ctx()))
+    assert res.ok
+    assert "### grep 'handleOrder'" in res.content and "main.go" in res.content
+    assert "### read" in res.content and "handleOrder docs" in res.content
+    assert "### list" in res.content and "util.go" in res.content
+
+
+def test_search_needs_at_least_one_op(tmp_path: Path) -> None:
+    tool = SearchTool(_scope(_mkproj(tmp_path)))
+    try:
+        tool.validate({})
+        assert False
+    except UserFacingError:
+        pass
+
+
+def test_search_op_cap(tmp_path: Path) -> None:
+    tool = SearchTool(_scope(_mkproj(tmp_path)))
+    try:
+        tool.validate({"read": [f"f{i}" for i in range(11)]})
+        assert False
+    except UserFacingError:
+        pass
+
+
+def test_search_out_of_scope_reported_not_leaked(tmp_path: Path) -> None:
+    root = _mkproj(tmp_path)
+    (tmp_path / "secret.txt").write_text("TOPSECRET", encoding="utf-8")
+    tool = SearchTool(_scope(root))
+    args = {"read": [str(tmp_path / "secret.txt")]}
+    res = asyncio.run(tool.run(args, _Ctx()))
+    assert res.is_error
+    assert "TOPSECRET" not in res.content  # ngoài scope → không đọc được nội dung

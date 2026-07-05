@@ -13,7 +13,10 @@ from pathlib import Path
 
 from yett.errors import UserFacingError
 from yett.tools.base import ToolCtx, ToolResult
+from yett.tools.builtin.files import ReadFileTool
 from yett.tools.projects import ProjectScope
+
+_MAX_BATCH_OPS = 10  # trần số thao tác trong một lần search gộp
 
 # Thư mục bỏ qua khi duyệt/grep (nhiễu, nặng, không phải source người đọc).
 _SKIP_DIRS = frozenset({
@@ -161,3 +164,67 @@ class GrepTool:
         except (OSError, UnicodeDecodeError):
             return False  # nhị phân/không đọc được → bỏ qua
         return False
+
+
+class SearchTool:
+    """Gộp nhiều grep/read/list trong MỘT lần gọi (học từ knowledge-agent-template §bash_batch).
+
+    Cắt số vòng LLM: agent tìm rồi đọc nhiều file cùng lúc thay vì gọi tuần tự. Mọi thao
+    tác đều qua ProjectScope (an toàn như read_file/grep). Tối đa 10 thao tác/lần."""
+
+    name = "search"
+    schema = {
+        "type": "object",
+        "properties": {
+            "grep": {
+                "type": "array",
+                "description": "danh sách truy vấn grep",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {"type": "string"},
+                        "path": {"type": "string"},
+                        "glob": {"type": "string"},
+                        "ignore_case": {"type": "boolean"},
+                    },
+                    "required": ["pattern"],
+                },
+            },
+            "read": {"type": "array", "items": {"type": "string"}, "description": "file cần đọc"},
+            "list": {"type": "array", "items": {"type": "string"}, "description": "thư mục cần liệt kê"},
+        },
+    }
+
+    def __init__(self, scope: ProjectScope) -> None:
+        self._grep = GrepTool(scope)
+        self._read = ReadFileTool(scope)
+        self._list = ListDirTool(scope)
+
+    def validate(self, args: dict) -> None:
+        ops = (args.get("grep") or []) + (args.get("read") or []) + (args.get("list") or [])
+        if not ops:
+            raise UserFacingError("cần ít nhất một thao tác: grep/read/list")
+        if len(ops) > _MAX_BATCH_OPS:
+            raise UserFacingError(f"tối đa {_MAX_BATCH_OPS} thao tác/lần (nhận {len(ops)})")
+
+    async def run(self, args: dict, ctx: ToolCtx) -> ToolResult:
+        blocks: list[str] = []
+        any_error = False
+        for q in args.get("grep") or []:
+            r = await self._section(self._grep, q, ctx, f"grep {q.get('pattern')!r}")
+            blocks.append(r[0]); any_error |= r[1]
+        for p in args.get("list") or []:
+            r = await self._section(self._list, {"path": p}, ctx, f"list {p}")
+            blocks.append(r[0]); any_error |= r[1]
+        for p in args.get("read") or []:
+            r = await self._section(self._read, {"path": p}, ctx, f"read {p}")
+            blocks.append(r[0]); any_error |= r[1]
+        return ToolResult(ok=not any_error, content="\n\n".join(blocks), is_error=any_error)
+
+    async def _section(self, tool, sub_args: dict, ctx: ToolCtx, label: str) -> tuple[str, bool]:
+        try:
+            tool.validate(sub_args)
+            res = await tool.run(sub_args, ctx)
+            return f"### {label}\n{res.content}", res.is_error
+        except UserFacingError as e:
+            return f"### {label}\n[lỗi] {e}", True

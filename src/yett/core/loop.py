@@ -27,6 +27,10 @@ Clock = Callable[[], float]
 class LoopConfig:
     max_iterations: int = 20
     context_token_budget: int = 150_000
+    # Anti-loop (học từ knowledge-agent-template §policy): giữ N bước cuối để bắt buộc
+    # trả lời (ép text-only, bỏ tool); và ép trả lời khi một tool-call bị lặp lại quá nhiều.
+    reserve_final_steps: int = 1
+    force_text_after_repeats: int = 3
 
 
 @dataclass
@@ -75,9 +79,14 @@ class AgentLoop:
         cancel: CancelToken | None = None,
         session_ctx=None,
         allowed_tools: set[str] | None = None,
+        max_iterations: int | None = None,
     ) -> TurnResult:
         cancel = cancel or CancelToken()
         session_ctx = session_ctx or _SimpleCtx(session_key)
+        # Router có thể siết số vòng theo độ khó câu hỏi; luôn bị chặn trên bởi cfg.
+        eff_max = self._cfg.max_iterations
+        if max_iterations is not None:
+            eff_max = max(1, min(max_iterations, self._cfg.max_iterations))
         root = self._tracer.start_span(
             SpanKind.AGENT, "turn", start_ts=self._clock(), session_key=session_key
         )
@@ -90,16 +99,23 @@ class AgentLoop:
         status = "done"
         text = ""
         i = 0
+        call_counts: dict[str, int] = {}  # đếm tool-call lặp để chống loop
         try:
-            for i in range(self._cfg.max_iterations):
+            for i in range(eff_max):
                 cancel.check()
+                # Anti-loop: giữ bước cuối để bắt buộc trả lời (hết budget); hoặc ép trả lời
+                # khi một tool-call bị lặp quá nhiều (agent kẹt).
+                reserve_hit = i >= eff_max - self._cfg.reserve_final_steps
+                repeat_hit = any(n >= self._cfg.force_text_after_repeats for n in call_counts.values())
+                force_text = reserve_hit or repeat_hit
                 # THINK
                 span = self._tracer.start_span(
                     SpanKind.LLM_CALL, "think", start_ts=self._clock(),
                     trace_id=root.trace_id, parent_id=root.id, session_key=session_key,
                 )
+                tools = [] if force_text else self._registry.schemas(allowed_tools)
                 try:
-                    res = await self._router.chat(ctx.messages, self._registry.schemas(allowed_tools))
+                    res = await self._router.chat(ctx.messages, tools)
                 except ContextOverflow:
                     ctx.prune(self._cfg.context_token_budget // 2)
                     self._tracer.end_span(span, end_ts=self._clock(), event="context_overflow_pruned")
@@ -110,9 +126,16 @@ class AgentLoop:
                     input_tokens=res.usage.input_tokens, output_tokens=res.usage.output_tokens,
                     cost_usd=self._cost_fn(res),
                 )
-                if res.stop_reason == "end_turn":
+                if force_text or res.stop_reason == "end_turn" or not res.tool_calls:
                     text = res.text or ""
                     ctx.add_assistant(text)
+                    if force_text and res.tool_calls:
+                        # Model vẫn muốn dùng tool nhưng bị ép trả lời.
+                        if reserve_hit:
+                            status = "max_iterations"  # cạn budget → câu trả lời best-effort
+                            self._emit_event(root, "max_iterations_reached", session_key)
+                        else:
+                            self._emit_event(root, "forced_text_only", session_key)  # chống loop
                     break
                 # PRUNE
                 if ctx.tokens() > self._cfg.context_token_budget:
@@ -122,6 +145,8 @@ class AgentLoop:
                     cancel.check()
                     if tc.id in completed:
                         continue  # idempotency khi resume
+                    sig = f"{tc.name}:{sorted(tc.args.items())}"
+                    call_counts[sig] = call_counts.get(sig, 0) + 1
                     tspan = self._tracer.start_span(
                         SpanKind.TOOL_CALL, tc.name, start_ts=self._clock(),
                         trace_id=root.trace_id, parent_id=root.id, session_key=session_key,

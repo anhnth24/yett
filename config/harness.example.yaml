@@ -56,6 +56,15 @@ budget:
   context_token_budget: 120000
   monthly_cost_alert_usd: 50
 
+# ---- Complexity router: câu dễ chạy ít vòng → tiết kiệm chi phí ----
+# Số vòng theo độ khó; bị chặn trên bởi budget.max_loop_iterations.
+router:
+  enabled: true
+  trivial_steps: 2     # chào hỏi/xác nhận
+  simple_steps: 4      # câu hỏi ngắn thông thường
+  moderate_steps: 8    # có việc nhiều bước (kiểm tra, điều tra…)
+  complex_steps: 20    # phân tích + sửa + deploy, kèm code, câu rất dài
+
 # ---- Project của bạn (trên ổ đĩa Windows, đường dẫn WSL2/container) ----
 projects:
   go-learn:
