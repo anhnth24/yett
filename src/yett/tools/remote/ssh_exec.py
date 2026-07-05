@@ -94,9 +94,32 @@ class LogReadTool:
 
 
 def _path_allowed(path: str, allow: list[str]) -> bool:
-    import fnmatch
+    """[P1-9/RT-13] Containment thật cho path log trên server REMOTE (luôn POSIX — server SSH
+    không phải Windows) — chuẩn hóa LEXICAL thuần chuỗi (`posixpath.normpath`), KHÔNG chạm
+    filesystem: path này ở xa, và controller có thể chạy Windows (harness quảng cáo đa nền,
+    CI có leg Windows) nên `Path.resolve()` local sẽ diễn giải theo quy tắc Windows — sai, và
+    nguy hiểm hơn là có thể đụng nhầm filesystem LOCAL thay vì chỉ tính toán chuỗi.
 
-    return any(fnmatch.fnmatch(path, pat) or path == pat for pat in allow)
+    Sau chuẩn hóa: path phải TUYỆT ĐỐI, cùng thư mục cha với đúng 1 pattern trong `allow`, và
+    (nếu pattern có wildcard) khớp glob CHỈ trên phần TÊN FILE — không cho `*` nuốt qua '/'.
+    Trước đây dùng `fnmatch.fnmatch(path, pattern)` trên CẢ ĐƯỜNG DẪN: '*' của fnmatch khớp
+    cả '/' lẫn '..' nên `/var/log/app/../../etc/passwd.log` lọt qua pattern
+    `/var/log/app/*.log` (kết thúc bằng .log, "chứa" phần giữa bất kỳ) — traversal thật ra
+    vùng ngoài log_paths khai báo dù nhìn qua tưởng bị chặn."""
+    import fnmatch
+    import posixpath
+    from pathlib import PurePosixPath
+
+    norm = PurePosixPath(posixpath.normpath(path))
+    if not norm.is_absolute() or ".." in norm.parts:
+        return False  # tương đối hoặc còn '..' sau chuẩn hóa (vượt gốc) → fail-closed
+    for pat in allow:
+        norm_pat = PurePosixPath(posixpath.normpath(pat))
+        if norm == norm_pat:
+            return True
+        if norm.parent == norm_pat.parent and fnmatch.fnmatchcase(norm.name, norm_pat.name):
+            return True
+    return False
 
 
 def _q(path: str) -> str:

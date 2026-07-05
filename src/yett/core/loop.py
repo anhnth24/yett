@@ -126,6 +126,7 @@ class AgentLoop:
                         tc, ctx, completed, completed_sigs,
                         session_ctx=session_ctx, root=root, session_key=session_key,
                         turn_id=turn_id, iteration=prev["iteration"], consult_cache=True,
+                        allowed_tools=allowed_tools,
                     )
             for i in range(eff_max):
                 cancel.check()
@@ -181,6 +182,7 @@ class AgentLoop:
                         tc, ctx, completed, completed_sigs,
                         session_ctx=session_ctx, root=root, session_key=session_key,
                         turn_id=turn_id, iteration=i, consult_cache=is_resume,
+                        allowed_tools=allowed_tools,
                     )
             else:
                 status = "max_iterations"
@@ -210,6 +212,7 @@ class AgentLoop:
         turn_id: str,
         iteration: int,
         consult_cache: bool,
+        allowed_tools: set[str] | None = None,
     ) -> None:
         """Chạy 1 tool_call (hoặc trả lại kết quả cache nếu `consult_cache` và đã có chữ ký
         khớp — RT-2), ghi tool_result vào context, rồi checkpoint NGAY (không đợi hết cả
@@ -219,6 +222,10 @@ class AgentLoop:
         resume), tool-call lặp lại phải chạy THẬT để cơ chế anti-loop (force_text_after_repeats)
         còn phát hiện được — nếu luôn tra cache thì mọi lần lặp thứ 2 trở đi sẽ bị nuốt âm
         thầm, anti-loop không bao giờ kích hoạt.
+
+        `allowed_tools` (RT-8): truyền THẲNG xuống `execute_tool` để enforce toolset con lúc
+        THỰC THI — trước đây chỉ ẩn schema khỏi provider (`self._registry.schemas(allowed_tools)`
+        ở `run_turn`), không chặn ở lớp chạy tool nên model vẫn có thể gọi tool ngoài toolset.
         """
         sig = tool_call_signature(tc.name, tc.args)
         if consult_cache and sig in completed_sigs:
@@ -233,6 +240,7 @@ class AgentLoop:
                 tc.name, tc.args, session_ctx,
                 gate=self._gate, registry=self._registry,
                 approver=self._approver, auditor=self._auditor, hooks=self._hooks,
+                allowed_tools=allowed_tools,
             )
             self._tracer.end_span(tspan, end_ts=self._clock(), is_error=result.is_error)
             ctx.add_tool_result(tc.id, result.content)

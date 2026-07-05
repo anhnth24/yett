@@ -23,6 +23,35 @@ Auditor = Callable[..., None]
 _UNTRUSTED_TOOLS = {"web_fetch", "web_search", "read_file", "log_read", "ssh_exec"}
 
 
+def _resolve_db_driver_hint(registry: Registry, args: dict) -> str | None:
+    """[Phase 6 handoff từ Phase 4] Gate chạy TRƯỚC tool.run() nên chưa biết driver thật của
+    DB profile (`args['profile']` mới chỉ là tên, chưa resolve). Đọc driver best-effort TỪ
+    CHÍNH `DbQueryTool` đã đăng ký trong registry — không I/O, không đụng secret, không gọi
+    `tool.run()`. `tools/db/` không thuộc phạm vi sửa của phase này nên không thêm accessor
+    công khai được; dùng getattr phòng thủ, bất kỳ shape lạ nào cũng trả None (không raise) để
+    `ImmutableCore` tự fallback fail-closed multi-dialect như trước (xem `immutable.py`)."""
+    if not registry.has("db_query"):
+        return None
+    profile_name = args.get("profile")
+    if not isinstance(profile_name, str) or not profile_name:
+        return None
+    profiles = getattr(registry.get("db_query"), "_profiles", None)
+    if not isinstance(profiles, dict):
+        return None
+    driver = getattr(profiles.get(profile_name), "driver", None)
+    return driver if isinstance(driver, str) else None
+
+
+def _gate_args(name: str, args: dict, registry: Registry) -> dict:
+    """Bản args Gate thấy — có thể được làm giàu (vd driver hint cho db_query) so với args
+    THẬT truyền cho tool.run(). Không đổi `args` gốc (tool tự resolve profile/driver riêng,
+    đã đúng từ Phase 4)."""
+    if name != "db_query":
+        return args
+    driver = _resolve_db_driver_hint(registry, args)
+    return {**args, "driver": driver} if driver is not None else args
+
+
 async def execute_tool(
     name: str,
     args: dict,
@@ -33,8 +62,18 @@ async def execute_tool(
     approver: Approver | None = None,
     auditor: Auditor | None = None,
     hooks=None,  # HookRunner | None — chạy Pre/PostToolUse (mutate/deny)
+    allowed_tools: set[str] | None = None,
 ) -> ToolResult:
-    dec: Decision = safe_evaluate(gate, name, args, ctx)
+    # [P1-10/RT-8] Toolset con subagent — THAM SỐ tường minh, không duck-type qua ctx
+    # (SessionCtx Protocol/_SimpleCtx không có allowed_tools, tra qua đó sẽ luôn-sai/raise).
+    # None = không giới hạn (cấp cha). Kiểm TRƯỚC Gate vì đây là biên cấu trúc (toolset con ⊆
+    # cha), không phải một quyết định policy.
+    if allowed_tools is not None and name not in allowed_tools:
+        if auditor:
+            auditor(kind="gate", tool=name, verdict="deny", rule_id="TOOLSET_SUBSET")
+        return ToolResult.error(f"[DENIED] tool '{name}' ngoài toolset con được phép")
+
+    dec: Decision = safe_evaluate(gate, name, _gate_args(name, args, registry), ctx)
     if auditor:
         auditor(kind="gate", tool=name, verdict=dec.verdict, rule_id=dec.rule_id)
 
@@ -59,6 +98,24 @@ async def execute_tool(
         if pre.mutated_args is not None:
             args = pre.mutated_args
 
+        # [P1-11] Hook chạy SAU Gate và có quyền mutate args — verdict `dec` ở trên được tính
+        # trên args CŨ, không còn đáng tin cho args MỚI (vd hook đổi `echo safe` → `rm -rf /`,
+        # tool sẽ chạy đúng args mới nếu không re-gate). Re-run Gate với args sau hook, xử lý
+        # verdict lần 2 ĐẦY ĐỦ: deny → chặn ngay; need_approval → hỏi duyệt LẠI với args mới
+        # (KHÔNG tái sử dụng biến `approved` ở trên — approval đó cấp cho args gốc, không phải
+        # args đã bị hook đổi); approver vắng → deny fail-closed.
+        redec = safe_evaluate(gate, name, _gate_args(name, args, registry), ctx)
+        if auditor:
+            auditor(kind="gate", tool=name, verdict=redec.verdict, rule_id=redec.rule_id, phase="post_hook")
+        if redec.verdict == "deny":
+            return ToolResult.error(f"[DENIED] {redec.reason}")
+        if redec.verdict == "need_approval":
+            reapproved = await approver(name, args) if approver else False
+            if auditor:
+                auditor(kind="approval", tool=name, approved=reapproved, phase="post_hook")
+            if not reapproved:
+                return ToolResult.error("[DENIED] approval bị từ chối hoặc hết hạn")
+
     tool = registry.get(name)
     try:
         tool.validate(args)
@@ -74,6 +131,12 @@ async def execute_tool(
         from yett.hooks.runner import HookEvent
 
         post = await hooks.run(HookEvent("PostToolUse", name, args, result.content))
-        if post.mutated_result is not None:
-            return ToolResult(ok=result.ok, content=post.mutated_result, is_error=result.is_error)
+        mutated = post.mutated_result if post.mutated_result is not None else result.content
+        # [P1-16] Hook chạy SAU Filters — nội dung hook chèn/sửa (vd secret injected sau khi
+        # đã redact) CHƯA từng qua redact/injection-scan. Lọc LẠI trước khi trả về (context sẽ
+        # checkpoint chuỗi này) thay vì trả thẳng `mutated_result` như trước.
+        result = filter_apply(
+            ToolResult(ok=result.ok, content=mutated, is_error=result.is_error),
+            untrusted=name in _UNTRUSTED_TOOLS,
+        )
     return result

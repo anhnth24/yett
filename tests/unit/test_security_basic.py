@@ -22,9 +22,36 @@ def test_default_deny() -> None:
 
 
 def test_allowlist_allows() -> None:
-    rules = [ToolRule(tool="exec", arg_patterns={"cmd": r"^ls"}, effect="allow")]
+    # [allowlist-anchor] pattern giờ phải khớp TOÀN BỘ cmd (fullmatch) — "(\s.*)?$" giữ ý định
+    # gốc "ls hoặc ls kèm tham số" thay vì prefix ngầm định qua search().
+    rules = [ToolRule(tool="exec", arg_patterns={"cmd": r"^ls(\s.*)?$"}, effect="allow")]
     dec = safe_evaluate(_gate(rules), "exec", {"cmd": "ls -la"}, _Ctx())
     assert dec.verdict == "allow"
+
+
+def test_allowlist_anchor_rejects_appended_command() -> None:
+    # [P2/allowlist-anchor] Pattern KHÔNG tự anchor (rule tác giả không viết ^/$) trước đây
+    # khớp nhầm qua re.search vì "ls" là substring hợp lệ của "ls; whoami". fullmatch đóng lỗ
+    # này: cmd phải khớp CHÍNH XÁC "ls" mới allow, có gắn thêm gì cũng rơi về default-deny.
+    # Dùng "whoami" (không phải "rm") để tách riêng lỗ anchor khỏi hardline denylist (đã có
+    # test riêng ở test_hardline_overrides_allowlist) — muốn chứng minh CHÍNH allowlist chặn,
+    # không phải hardline chặn hộ.
+    rules = [ToolRule(tool="exec", arg_patterns={"cmd": "ls"}, effect="allow")]
+    dec = safe_evaluate(_gate(rules), "exec", {"cmd": "ls; whoami"}, _Ctx())
+    assert dec.verdict == "deny" and dec.rule_id == "DEFAULT_DENY"
+    ok = safe_evaluate(_gate(rules), "exec", {"cmd": "ls"}, _Ctx())
+    assert ok.verdict == "allow"
+
+
+def test_allowlist_path_normalized_before_match() -> None:
+    # [P2/allowlist path-normalize] Anchor một mình không đủ: "/workspace/../etc/passwd" VẪN
+    # literally bắt đầu bằng "/workspace/" nên fullmatch "^/workspace/.*$" vẫn "khớp" nếu
+    # không chuẩn hóa trước — path traversal lọt qua rule tưởng đã giới hạn đúng thư mục.
+    rules = [ToolRule(tool="read_file", arg_patterns={"path": r"^/workspace/.*$"}, effect="allow")]
+    dec = safe_evaluate(_gate(rules), "read_file", {"path": "/workspace/../etc/passwd"}, _Ctx())
+    assert dec.verdict == "deny" and dec.rule_id == "DEFAULT_DENY"
+    ok = safe_evaluate(_gate(rules), "read_file", {"path": "/workspace/notes.txt"}, _Ctx())
+    assert ok.verdict == "allow"
 
 
 def test_hardline_overrides_allowlist() -> None:

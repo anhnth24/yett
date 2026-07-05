@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+import posixpath
 import re
 from typing import Literal
 
 from pydantic import BaseModel, Field
+
+# Arg trông giống path — chuẩn hóa trước khi so khớp (cùng lý do với
+# `security/allowlist.py._normalize_arg_value`: harness chạy Windows nhưng path project trong
+# config lại là POSIX-style/WSL2, nên KHÔNG dùng `os.path.normpath`/`Path.resolve()` — đổi
+# separator theo OS đang chạy sẽ làm pattern POSIX-style không còn khớp được. Giữ 2 bản riêng
+# (allowlist.py + đây) vì Match ở policy layer không nên import ngược security.allowlist chỉ
+# để dùng 1 hàm 1 dòng).
+_PATH_LIKE_KEYS = {"path", "cwd"}
 
 
 class Match(BaseModel):
@@ -18,7 +27,13 @@ class Match(BaseModel):
         if self.tool not in (None, "*", tool):
             return False
         for k, pat in self.args.items():
-            if not re.search(pat, str(args.get(k, ""))):
+            val = str(args.get(k, ""))
+            if k in _PATH_LIKE_KEYS:
+                val = posixpath.normpath(val.replace("\\", "/"))
+            # [P2/allowlist-anchor] `fullmatch` thay `search` — pattern không tự anchor (vd
+            # "ls") trước đây khớp NHẦM khi chỉ là substring (`ls; rm`). Rule cần khớp nhiều
+            # biến thể phải tự viết pattern đủ (vd `^echo .*$`).
+            if not re.fullmatch(pat, val):
                 return False
         if self.session is not None and getattr(ctx, "session_key", None) != self.session:
             return False
