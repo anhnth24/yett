@@ -8,11 +8,23 @@ Parse không được → DENY (fail-closed). KHÔNG có đường approval cho 
 
 from __future__ import annotations
 
+import posixpath
 import re
 import shlex
 from enum import Enum
 
 from yett.security.gate import Decision
+
+# Toán tử nối lệnh shell dùng để tách chuỗi thành từng phần con — PHẢI liệt kê "&&"/"||"
+# TRƯỚC "&"/"|" (đơn) để không bị nuốt nhầm (đơn là tập con ký tự của đôi).
+# "&" đơn KHÔNG được tách khi ngay sau "<"/">" — đó là toán tử fd-dup (2>&1, 1>&2), không
+# phải toán tử nối lệnh nền (background).
+_SHELL_OPS = r"(?:&&|\|\||;|\||(?<![<>])&|\n)"
+
+# Redirect ghi (>/>>), chấp nhận fd-prefix (1>, 2>) và không-space (x>file); loại trừ
+# fd-duplication vô hại (2>&1, >&2) bằng lookahead phủ định "&" ngay sau toán tử.
+_REDIRECT_RE = re.compile(r"\d*(?:>>?)(?!&)")
+_REDIRECT_TARGET_RE = re.compile(r"\d*(?:>>?)(?!&)\s*([^\s&|;<>]+)")
 
 # Binary xóa/hủy file — tên lệnh (đã strip path, wrapper, alias).
 _DELETE_BINS = {"rm", "rmdir", "unlink", "shred", "srm", "wipe"}
@@ -62,12 +74,22 @@ def _basename(tok: str) -> str:
     return tok.rsplit("/", 1)[-1]
 
 
+def _redirect_target_is_safe(path: str) -> bool:
+    """True nếu target redirect được miễn trừ: /dev/null hoặc /tmp thật.
+    Canonicalize (posixpath.normpath) trước khi so khớp để chặn traversal kiểu
+    ">/tmp/../etc/passwd" giả trang /tmp."""
+    norm = posixpath.normpath(path)
+    if norm == "/dev/null":
+        return True
+    return norm == "/tmp" or norm.startswith("/tmp/")
+
+
 def _contains_delete(cmd: str, _depth: int = 0) -> bool:
     """True nếu cmd (hoặc bất kỳ thành phần con nào) chạy lệnh xóa file. Fail-closed."""
     if _depth > 6:
         return True  # lồng quá sâu → coi như nguy hiểm
-    # tách theo các toán tử shell nối lệnh
-    for part in re.split(r"(?:&&|\|\||;|\||\n)", cmd):
+    # tách theo các toán tử shell nối lệnh (bao gồm "&" đơn — P0-4)
+    for part in re.split(_SHELL_OPS, cmd):
         part = part.strip()
         if not part:
             continue
@@ -82,9 +104,13 @@ def _part_has_delete(part: str, depth: int) -> bool:
         inner = next(g for g in m.groups() if g is not None)
         if _contains_delete(inner, depth + 1):
             return True
-    # redirect ghi đè ra file (khác /dev/null, /tmp) → coi như phá file
-    if re.search(r"(^|\s)>\s*(?!/dev/null)(?!/tmp/)\S", part) or re.search(r"\btee\b", part):
-        # ghi đè là hành vi phá dữ liệu file — chặn (trừ /dev/null, /tmp)
+    # redirect ghi đè ra file (khác /dev/null, /tmp thật) → coi như phá file.
+    # Bắt cả no-space (x>file), fd-prefix (1>/2>) và >> append; canonicalize target
+    # để không lọt traversal kiểu ">/tmp/../etc/passwd".
+    for m in _REDIRECT_TARGET_RE.finditer(part):
+        if not _redirect_target_is_safe(m.group(1)):
+            return True
+    if re.search(r"\btee\b", part):
         return True
     try:
         tokens = shlex.split(part)
@@ -139,15 +165,15 @@ def classify(cmd: str, *, deploy_script: str | None = None, log_readonly: bool =
 
 def _is_readonly(cmd: str) -> bool:
     try:
-        parts = re.split(r"(?:&&|\|\||;|\|)", cmd)
+        parts = re.split(_SHELL_OPS, cmd)
     except Exception:
         return False
     for part in parts:
         part = part.strip()
         if not part:
             continue
-        # readonly không được có redirect ghi
-        if re.search(r"(^|\s)>\S*", part) or re.search(r"\btee\b", part):
+        # readonly không được có redirect ghi (bắt cả no-space/fd-prefix/append)
+        if _REDIRECT_RE.search(part) or re.search(r"\btee\b", part):
             return False
         try:
             tokens = shlex.split(part)

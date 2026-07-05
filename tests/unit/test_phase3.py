@@ -69,6 +69,32 @@ def test_immutable_db_write_blocked() -> None:
     assert dec.verdict == "deny"
 
 
+# --- RT-5/RT-18: immutable-core (chạy TRƯỚC db_query.py, chưa biết driver thật của profile)
+# KHÔNG còn mặc định dialect='postgres' — /*! phải bị chặn ở CHÍNH lớp Gate này, không chỉ ở
+# db_query.py (nơi đã tự truyền đúng prof.driver từ trước).
+def test_immutable_db_query_exec_comment_blocked_without_known_driver() -> None:
+    rules = [Rule(id="allowall", match=Match(tool="db_query", args={"sql": ".*"}), effect="allow")]
+    sql = "SELECT 1 /*!50000,(SELECT password FROM users)*/"
+    # args thô từ model (chưa resolve profile) — không có "driver".
+    dec = safe_evaluate(_engine(rules), "db_query", {"sql": sql}, _Ctx())
+    assert dec.verdict == "deny" and dec.rule_id == "SQL_EXEC_COMMENT_HARDLINE"
+
+
+def test_immutable_db_query_plain_select_allowed_without_known_driver() -> None:
+    # Fail-closed multi-dialect không được false-deny SELECT hợp lệ chỉ vì Gate chưa biết driver.
+    rules = [Rule(id="allowall", match=Match(tool="db_query", args={"sql": ".*"}), effect="allow")]
+    dec = safe_evaluate(_engine(rules), "db_query", {"sql": "SELECT * FROM orders WHERE id = 1"}, _Ctx())
+    assert dec.verdict == "allow"
+
+
+def test_immutable_db_query_uses_driver_hint_when_provided() -> None:
+    # Khi driver thật có sẵn trong args (vd caller đã resolve profile), immutable-core dùng
+    # đúng dialect đó thay vì fail-closed union-dialect.
+    core = ImmutableCore([])
+    dec = core.check("db_query", {"sql": "SELECT * FROM orders", "driver": "mysql"})
+    assert dec is None  # None nghĩa là không hardline-deny (allow, đi tiếp rule engine)
+
+
 def test_immutable_protects_policy_file(tmp_path: Path) -> None:
     policy_file = tmp_path / "policy.yaml"
     policy_file.write_text("rules: []", encoding="utf-8")

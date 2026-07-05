@@ -23,9 +23,26 @@ _WRITE_EXPRESSIONS = (
 )
 _ALLOWED_ROOTS = (exp.Select, exp.Union, exp.Show, exp.Describe, exp.With, exp.Pragma)
 
+# Tên driver ứng dụng (DbProfile.driver) khác tên dialect sqlglot thực ở vài chỗ.
+_DIALECT_ALIASES = {"sqlserver": "tsql"}
+
+
+class SqlExecCommentRejected(Exception):
+    """Nội bộ: _normalize phát hiện MySQL exec-comment (/*! ... */) trong SQL."""
+
 
 def _normalize(sql: str) -> str:
-    """Chuẩn hoá trước parse: bỏ comment splice để né obfuscation kiểu AL/**/TER."""
+    """Chuẩn hoá trước parse: bỏ comment splice để né obfuscation kiểu AL/**/TER.
+
+    [RT-5/RT-18] MySQL exec-comment `/*! ... */` thực thi nội dung bên trong khi chạy trên
+    MySQL thật, nhưng dialect khác (vd postgres) coi đây là comment thường và bỏ nội dung khi
+    parse — parser "thấy" câu vô hại trong khi engine thật thực thi payload ẩn bên trong.
+    Vì có nhiều call-site gọi classify_sql với dialect không chắc đúng 100% (vd immutable-core
+    ở lớp Gate chưa resolve profile), REJECT thẳng bất kỳ SQL nào chứa "/*!"  — bất kể dialect
+    khai báo là gì (fail-closed, không phụ thuộc việc đoán đúng dialect).
+    """
+    if "/*!" in sql:
+        raise SqlExecCommentRejected("SQL chứa MySQL exec-comment '/*!' — bị cấm bất kể dialect")
     # sqlglot tự xử lý comment, nhưng bỏ block comment giữa từ khoá cho chắc
     sql = re.sub(r"/\*.*?\*/", " ", sql, flags=re.DOTALL)
     sql = re.sub(r"--[^\n]*", " ", sql)
@@ -50,7 +67,11 @@ def _has_write(node: exp.Expression) -> bool:
 
 
 def classify_sql(sql: str, dialect: str = "postgres") -> Decision:
-    norm = _normalize(sql)
+    dialect = _DIALECT_ALIASES.get(dialect, dialect)
+    try:
+        norm = _normalize(sql)
+    except SqlExecCommentRejected as e:
+        return Decision("deny", f"HARDLINE: {e}", "SQL_EXEC_COMMENT_HARDLINE")
     if not norm:
         return Decision("deny", "SQL rỗng", "SQL_EMPTY")
     try:

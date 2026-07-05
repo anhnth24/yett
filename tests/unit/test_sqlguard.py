@@ -71,3 +71,40 @@ def test_explain_analyze_write_blocked() -> None:
 
 def test_explain_select_allowed() -> None:
     assert classify_sql("EXPLAIN ANALYZE SELECT * FROM orders").verdict == "allow"
+
+
+# --- RT-5/RT-18: MySQL exec-comment /*! ... */ phải bị chặn BẤT KỂ dialect khai báo ---
+# Trước fix: default dialect='postgres' coi /*! ... */ là comment thường và bỏ nội dung khi
+# parse → câu "trông" vô hại lọt qua, trong khi MySQL thật lại THỰC THI nội dung bên trong.
+EXEC_COMMENT_CASES = [
+    "SELECT 1 /*!50000,(SELECT password FROM users)*/",
+    "SELECT * FROM orders /*!UNION SELECT * FROM secrets*/",
+    "SELECT 1/*!32302 UNION SELECT password FROM users*/",
+]
+
+
+@pytest.mark.parametrize("sql", EXEC_COMMENT_CASES)
+@pytest.mark.parametrize("dialect", ["postgres", "mysql", "sqlite", "tsql"])
+def test_mysql_exec_comment_rejected_regardless_of_dialect(sql: str, dialect: str) -> None:
+    dec = classify_sql(sql, dialect)
+    assert dec.verdict == "deny", f"[{dialect}] /*! phải bị chặn: {sql}"
+    assert dec.rule_id == "SQL_EXEC_COMMENT_HARDLINE"
+
+
+def test_plain_select_still_allowed_after_exec_comment_fix() -> None:
+    # Fix fail-closed không được làm lọt-deny câu SELECT thường (không chứa "/*!").
+    assert classify_sql("SELECT * FROM orders WHERE id = 1").verdict == "allow"
+    assert classify_sql("SELECT * FROM orders WHERE id = 1", "mysql").verdict == "allow"
+
+
+def test_ordinary_block_comment_still_stripped() -> None:
+    # "/**/" (không có "!") vẫn là comment thường, không bị fail-closed reject.
+    assert classify_sql("SELECT 1 /* ordinary comment */").verdict == "allow"
+
+
+def test_sqlserver_driver_alias_mapped_to_sqlglot_tsql() -> None:
+    # DbProfile.driver="sqlserver" không phải tên dialect sqlglot hợp lệ ("tsql" mới đúng) —
+    # trước đây gọi thẳng classify_sql(sql, "sqlserver") luôn fail-closed deny do parse lỗi
+    # dialect. classify_sql phải tự map alias để câu SELECT hợp lệ trên SQL Server vẫn pass.
+    dec = classify_sql("SELECT TOP 10 * FROM orders", "sqlserver")
+    assert dec.verdict == "allow", dec.reason
