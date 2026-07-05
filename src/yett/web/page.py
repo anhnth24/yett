@@ -43,9 +43,20 @@ button.send:disabled { opacity:.5; cursor:default; }
   <span class="mut" id="cost" style="margin-left:auto"></span>
   <button class="tab on" id="tabChat">Chat</button>
   <button class="tab" id="tabPanel">Traces / Cost</button>
+  <button class="tab" id="tabCfg">Cấu hình</button>
 </header>
 <div id="log"></div>
 <div id="panel"></div>
+<div id="cfg" style="display:none; padding:16px; overflow-y:auto; flex-direction:column;">
+  <div class="mut" id="cfgpath" style="margin-bottom:8px"></div>
+  <textarea id="cfgtext" spellcheck="false" style="width:100%; flex:1; min-height:60vh; resize:vertical;
+    background:#0c0d10; color:#e6e8ec; border:1px solid #252a34; border-radius:8px; padding:12px;
+    font:13px/1.5 ui-monospace,Consolas,monospace;"></textarea>
+  <div style="margin-top:10px; display:flex; gap:10px; align-items:center;">
+    <button class="send" id="cfgsave">Lưu cấu hình</button>
+    <span class="mut" id="cfgmsg"></span>
+  </div>
+</div>
 <form id="f"><textarea id="in" placeholder="Nhập tin nhắn... (Enter gửi, Shift+Enter xuống dòng)"></textarea>
 <button class="send" id="send">Gửi</button></form>
 <script>
@@ -90,11 +101,23 @@ form.addEventListener('submit',e=>{e.preventDefault();const m=input.value.trim()
 input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();
   const m=input.value.trim();if(m)send(m);}});
 // --- Tabs ---
-const tc=document.getElementById('tabChat'), tp=document.getElementById('tabPanel');
-tc.onclick=()=>{tc.classList.add('on');tp.classList.remove('on');log.style.display='flex';
-  panel.style.display='none';form.style.display='flex';};
-tp.onclick=async()=>{tp.classList.add('on');tc.classList.remove('on');log.style.display='none';
-  form.style.display='none';panel.style.display='block';await loadPanel();};
+const tc=document.getElementById('tabChat'), tp=document.getElementById('tabPanel'),
+  tcfg=document.getElementById('tabCfg'), cfg=document.getElementById('cfg');
+function tabs(on){[tc,tp,tcfg].forEach(t=>t.classList.remove('on'));on.classList.add('on');}
+tc.onclick=()=>{tabs(tc);log.style.display='flex';panel.style.display='none';cfg.style.display='none';form.style.display='flex';};
+tp.onclick=async()=>{tabs(tp);log.style.display='none';form.style.display='none';cfg.style.display='none';
+  panel.style.display='block';await loadPanel();};
+tcfg.onclick=async()=>{tabs(tcfg);log.style.display='none';form.style.display='none';panel.style.display='none';
+  cfg.style.display='flex';await loadCfg();};
+async function loadCfg(){try{const j=await(await fetch('/api/config')).json();
+  document.getElementById('cfgtext').value=j.text||'';
+  document.getElementById('cfgpath').textContent='File: '+(j.path||'?')+'  (secret nên để ở secrets/ hoặc env)';
+  document.getElementById('cfgmsg').textContent='';}catch(e){}}
+document.getElementById('cfgsave').onclick=async()=>{const msg=document.getElementById('cfgmsg');
+  msg.textContent='Đang lưu...';
+  try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({text:document.getElementById('cfgtext').value})});const j=await r.json();
+    msg.textContent=j.error?('❌ '+j.error):('✓ '+(j.note||'Đã lưu'));}catch(e){msg.textContent='Lỗi: '+e;}};
 async function loadPanel(){let h='<h3>Chi phí theo provider</h3><table><tr><th>Provider</th><th>Cost (USD)</th><th>Calls</th></tr>';
   try{const u=await(await fetch('/api/usage')).json();for(const k in u.rows){const v=u.rows[k];
     h+='<tr><td>'+k+'</td><td>$'+v.cost_usd.toFixed(4)+'</td><td>'+v.calls+'</td></tr>';}}catch(e){}

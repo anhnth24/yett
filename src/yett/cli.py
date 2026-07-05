@@ -34,6 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument("--open", action="store_true", help="tự mở trình duyệt")
 
+    sub.add_parser("doctor", help="kiểm tra máy có đủ công cụ chưa (thiếu thì chỉ cách cài)")
     sub.add_parser("demo", help="chạy một turn mẫu offline (FakeProvider)")
 
     chat = sub.add_parser("chat", help="hội thoại với agent (cần config + provider)")
@@ -71,7 +72,7 @@ def _cmd_serve(args) -> int:
     except YettError as e:
         print(f"[yett] lỗi khởi động: {e}", file=sys.stderr)
         return 1
-    serve_forever(app, host=args.host, port=args.port, open_browser=args.open)
+    serve_forever(app, host=args.host, port=args.port, open_browser=args.open, config_path=args.config)
     return 0
 
 
@@ -159,6 +160,11 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if not args.command:
         build_parser().print_help()
+        return 0
+    if args.command == "doctor":
+        from yett.doctor import run_doctor
+
+        run_doctor()
         return 0
     if args.command == "setup":
         return _cmd_setup(args)

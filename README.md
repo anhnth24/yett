@@ -127,6 +127,8 @@ Use-case đầu tiên: trợ lý DevOps cá nhân chạy local — quản lý pr
 - **Web UI local** (`yett serve --open`) — khung chat trong trình duyệt (localhost), tái dùng toàn bộ core.
 - **Duyệt approval trên giao diện** — khi agent cần chạy lệnh nhạy cảm (deploy, tool cần duyệt), UI hiện nút **Duyệt / Từ chối** kèm nguyên văn lệnh; turn chờ quyết định (timeout → từ chối sạch). Không cần vào terminal.
 - **Tab Traces / Cost** — xem chi phí theo provider + danh sách trace gần đây ngay trên UI.
+- **Tab Cấu hình** — xem và sửa `harness.yaml` ngay trong trình duyệt, validate trước khi lưu (config hỏng không ghi đè). Không phải mở file thủ công.
+- **`yett doctor`** — kiểm tra máy có đủ công cụ chưa (Python/Docker/git/asyncssh/openfortivpn...), thiếu thì in lệnh cài đúng theo OS (winget/brew/apt).
 - Đóng gói `yett.exe` (double-click chạy, không cần Python) — xem [`packaging/BUILD_EXE.md`](packaging/BUILD_EXE.md).
 
 ### Kênh giao tiếp

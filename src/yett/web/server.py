@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from yett.app import App
 
 
-def make_handler(app: "App", center=None) -> type[BaseHTTPRequestHandler]:
+def make_handler(app: "App", center=None, config_path: str | None = None) -> type[BaseHTTPRequestHandler]:
     chat_lock = threading.Lock()  # serialize turn (single-user local)
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):  # tắt log ồn ra stderr
@@ -49,6 +49,11 @@ def make_handler(app: "App", center=None) -> type[BaseHTTPRequestHandler]:
                 self._json(200, {"traces": app.spanstore.list_traces(limit=50)})
             elif self.path == "/api/pending":
                 self._json(200, {"pending": center.list_pending() if center else []})
+            elif self.path == "/api/config":
+                from yett.web.configio import read_config_text
+
+                self._json(200, {"text": read_config_text(config_path) if config_path else "",
+                                 "path": config_path or ""})
             else:
                 self._json(404, {"error": "not found"})
 
@@ -66,6 +71,19 @@ def make_handler(app: "App", center=None) -> type[BaseHTTPRequestHandler]:
                     return
                 ok = center.resolve(data.get("id", ""), bool(data.get("approved")))
                 self._json(200 if ok else 404, {"ok": ok})
+                return
+
+            if self.path == "/api/config":
+                if not config_path:
+                    self._json(404, {"error": "không có config path"})
+                    return
+                from yett.web.configio import write_config_text
+
+                err = write_config_text(config_path, data.get("text", ""))
+                if err:
+                    self._json(400, {"error": err})
+                else:
+                    self._json(200, {"ok": True, "note": "Đã lưu. Khởi động lại yett để áp dụng."})
                 return
 
             if self.path != "/api/chat":
@@ -87,20 +105,22 @@ def make_handler(app: "App", center=None) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
-def serve(app: "App", *, host: str = "127.0.0.1", port: int = 8765, center=None) -> ThreadingHTTPServer:
+def serve(app: "App", *, host: str = "127.0.0.1", port: int = 8765, center=None,
+          config_path: str | None = None) -> ThreadingHTTPServer:
     """Tạo server. Nếu truyền ApprovalCenter → gắn approver để UI duyệt lệnh nhạy cảm."""
     if center is not None:
         app.set_approver(center.request)
-    return ThreadingHTTPServer((host, port), make_handler(app, center))
+    return ThreadingHTTPServer((host, port), make_handler(app, center, config_path))
 
 
 def serve_forever(
-    app: "App", *, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = False
+    app: "App", *, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = False,
+    config_path: str | None = None,
 ) -> None:
     from yett.approvals import ApprovalCenter
 
     center = ApprovalCenter(default_timeout=float(app.cfg.security.approval_timeout_sec))
-    httpd = serve(app, host=host, port=port, center=center)
+    httpd = serve(app, host=host, port=port, center=center, config_path=config_path)
     url = f"http://{host}:{port}"
     print(f"[yett] Web UI: {url}  (Ctrl+C để dừng)")
     if open_browser:
