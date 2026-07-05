@@ -114,3 +114,18 @@ def test_subagent_registered(tmp_path: Path) -> None:
               state_dir=tmp_path / "st", secrets=InMemorySecretStore(), clock=_clock())
     assert app.registry.has("delegate")  # delegate tool đã wire
     app.close()
+
+
+def test_capabilities_summary_grounded(tmp_path: Path) -> None:
+    from yett.config.models import DbProfileCfg
+    ws = tmp_path / "ws"; ws.mkdir()
+    cfg = _cfg(tmp_path, databases={"uat": DbProfileCfg(driver="sqlite", dsn_secret="d")})
+    app = App(provider=FakeProvider([text_result("ok")]), cfg=cfg, state_dir=tmp_path / "st",
+              secrets=InMemorySecretStore({"d": "SECRETVAL123"}), clock=_clock())
+    cap = app.capabilities_summary()
+    # liệt kê tool thật + tài nguyên + giới hạn an toàn, không lộ secret
+    assert "exec" in cap and "db_query" in cap and "read_file" in cap
+    assert "uat" in cap  # DB đã khai
+    assert "KHÔNG ALTER/DELETE/UPDATE" in cap
+    assert "SECRETVAL123" not in cap  # secret value không lộ
+    app.close()

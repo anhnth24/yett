@@ -178,15 +178,39 @@ class App:
 
         self.registry.register(DelegateTool(agents_dir, runner))
 
-    async def chat(self, message: str, *, session_key: str = "main", turn_id: str | None = None) -> TurnResult:
-        base = "Bạn là yett, trợ lý fail-closed."
+    def capabilities_summary(self) -> str:
+        """Mô tả khả năng THẬT (tool + tài nguyên đã cấu hình) để agent tự giới thiệu đúng.
+        Không lộ secret — chỉ tên project/DB/host."""
+        tool_desc = {
+            "exec": "chạy lệnh trong sandbox", "read_file": "đọc file", "write_file": "ghi file",
+            "web_fetch": "tải URL (qua allowlist)", "web_search": "tìm kiếm web",
+            "db_query": "query DB CHỈ ĐỌC (không sửa/xóa)", "db_config": "quản lý profile DB",
+            "ssh_exec": "chạy lệnh trên server qua SSH (deploy phải duyệt; cấm xóa file)",
+            "log_read": "đọc log server (read-only)", "vpn": "bật/tắt VPN",
+            "load_skill": "nạp hướng dẫn skill", "delegate": "giao việc cho subagent",
+        }
+        lines = ["Bạn là yett — trợ lý DevOps cá nhân, fail-closed (mặc định từ chối, chặn trước khi chạy).",
+                 "", "KHẢ NĂNG (tool đang bật):"]
+        for name in self.registry.names():
+            lines.append(f"- {name}: {tool_desc.get(name, name)}")
+        if self.cfg.projects:
+            lines.append(f"\nProject đã đăng ký: {', '.join(self.cfg.projects)}")
+        if self.cfg.databases:
+            lines.append(f"Database (chỉ đọc): {', '.join(self.cfg.databases)}")
+        if self.cfg.remote.hosts:
+            lines.append(f"Server SSH: {', '.join(self.cfg.remote.hosts)}")
         if self.skill_loader is not None:
             menu = self.skill_loader.menu()
             if menu:
-                lines = "\n".join(f"- {s['name']}: {s['description']}" for s in menu)
-                base += f"\n\nSkill khả dụng (gọi load_skill để lấy hướng dẫn):\n{lines}"
+                lines.append("\nSkill (gọi load_skill để lấy hướng dẫn):")
+                lines += [f"- {s['name']}: {s['description']}" for s in menu]
+        lines.append("\nGiới hạn an toàn: KHÔNG xóa file OS trên server, KHÔNG ALTER/DELETE/UPDATE DB "
+                     "trừ khi được duyệt tường minh. Khi bị chặn, giải thích và đề xuất cách an toàn.")
+        return "\n".join(lines)
+
+    async def chat(self, message: str, *, session_key: str = "main", turn_id: str | None = None) -> TurnResult:
         system = self.workspace.build_system_prompt(
-            base, token_budget=self.cfg.budget.context_token_budget // 2
+            self.capabilities_summary(), token_budget=self.cfg.budget.context_token_budget // 2
         )
         ctx = assemble_context(system, message)
         tid = turn_id or f"turn-{int(self._clock()*1000)}"
