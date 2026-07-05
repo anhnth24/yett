@@ -11,7 +11,10 @@ from pydantic import BaseModel, Field
 class ProviderCfg(BaseModel):
     name: str  # "anthropic" | "openai_compat" | "fake"
     model: str
-    api_key_secret: str = ""  # TÊN secret, không phải giá trị
+    # Cách 1 (khuyến nghị): api_key_secret = TÊN secret, key nằm ở secret store/env.
+    api_key_secret: str = ""
+    # Cách 2 (tiện, local): api_key = dán thẳng key vào đây. config/harness.yaml đã gitignored.
+    api_key: str = ""
     base_url: str | None = None
     max_retries: int = 4
 

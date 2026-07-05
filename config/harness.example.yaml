@@ -11,7 +11,11 @@
 provider:
   name: glm
   model: glm-5.2                    # hoặc glm-4.6 (rẻ hơn), glm-4.5-air
-  api_key_secret: llm_key
+  # --- Chọn 1 trong 2 cách đặt API key ---
+  # Cách A (tiện, local): dán thẳng key vào đây (config này đã gitignored):
+  api_key: "DÁN_API_KEY_VÀO_ĐÂY"
+  # Cách B (an toàn hơn): để tên secret, đặt key ở secrets/llm_key hoặc env YETT_SECRET_LLM_KEY:
+  # api_key_secret: llm_key
   max_retries: 4
   # base_url: https://open.bigmodel.cn/api/paas/v4   # bỏ comment nếu dùng endpoint TQ
 

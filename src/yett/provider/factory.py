@@ -17,7 +17,13 @@ _OAI_COMPAT = {
 
 
 def build_provider(cfg: ProviderCfg, secrets) -> Provider:
-    key = secrets.get(cfg.api_key_secret) if cfg.api_key_secret else ""
+    # api_key inline (tiện) ưu tiên nếu có; ngược lại lấy theo TÊN từ secret store.
+    if cfg.api_key:
+        key = cfg.api_key
+    elif cfg.api_key_secret:
+        key = secrets.get(cfg.api_key_secret)
+    else:
+        key = ""
     if cfg.name in _OAI_COMPAT:
         from yett.provider.openai_compat import OpenAICompatProvider
 
