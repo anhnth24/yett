@@ -1,0 +1,15 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.mypy_cache
+.ruff_cache
+.pytest_cache
+state
+backups
+secrets
+config/harness.yaml
+.yett-demo
+docs
+tests

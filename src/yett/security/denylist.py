@@ -9,8 +9,8 @@ import re
 
 from yett.security.gate import Decision
 
-# Lệnh exec hardline (áp cho tool exec local + là nền cho SSH ở P2)
-_DENY_EXEC = re.compile(
+# Lệnh exec hardline POSIX (Linux/macOS) — áp cho tool exec local + nền cho SSH
+_DENY_EXEC_POSIX = re.compile(
     r"""
     (^|[\s;&|`$(])            # ranh giới lệnh
     (rm|rmdir|unlink|shred|mkfs|dd)\b   # binary phá hoại
@@ -20,14 +20,36 @@ _DENY_EXEC = re.compile(
     re.VERBOSE,
 )
 
-# Đường dẫn nhạy cảm không được đọc/ghi
-_DENY_PATH = re.compile(r"(/etc/shadow|/etc/sudoers|\.ssh/id_|\.aws/credentials|/root/\.)")
+# Lệnh exec hardline WINDOWS (cmd/PowerShell) — cho chạy native Windows
+_DENY_EXEC_WIN = re.compile(
+    r"""
+    (?ix)
+    (^|[\s;&|(])
+    ( del | erase                       # xóa file
+    | rd | rmdir                        # xóa thư mục (rd /s xoá đệ quy)
+    | remove-item | ri | rm | del       # PowerShell alias
+    | format                            # format ổ
+    | clear-content                     # xoá nội dung file
+    ) \b
+    | \bfsutil\b
+    | \bdiskpart\b
+    """,
+    re.VERBOSE,
+)
+
+# Đường dẫn nhạy cảm không được đọc/ghi (POSIX + Windows)
+_DENY_PATH = re.compile(
+    r"(/etc/shadow|/etc/sudoers|\.ssh/id_|\.aws/credentials|/root/\.|"
+    r"\\Windows\\System32\\config|\\SAM\b|%SystemRoot%)",
+    re.IGNORECASE,
+)
 
 
 def check_exec(cmd: str) -> Decision | None:
-    """Trả Decision(deny) nếu lệnh chạm hardline; None nếu không."""
-    if _DENY_EXEC.search(cmd):
-        return Decision("deny", "hardline: lệnh phá hoại bị cấm tuyệt đối", "DENY_EXEC")
+    """Trả Decision(deny) nếu lệnh chạm hardline; None nếu không.
+    Kiểm cả POSIX lẫn Windows (không phụ thuộc OS đang chạy — an toàn khi exec qua SSH/container)."""
+    if _DENY_EXEC_POSIX.search(cmd) or _DENY_EXEC_WIN.search(cmd):
+        return Decision("deny", "hardline: lệnh phá hoại/xóa file bị cấm tuyệt đối", "DENY_EXEC")
     return None
 
 

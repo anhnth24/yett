@@ -147,7 +147,7 @@ Use-case đầu tiên: trợ lý DevOps cá nhân chạy local — quản lý pr
 
 ## Quyết định đã chốt
 
-Tên sản phẩm **yett** (CLI `yett`, package `yett`, config `~/.yett/`) · Python ≥3.11 · SQLite (v0.1–0.2) · Docker sandbox · single-tenant · chuẩn skills agentskills.io · clean-room bắt buộc với GoClaw (chỉ đọc docs, không đọc code Go) · platform: **Windows + WSL2 + Docker Desktop (đã xác nhận)** — harness chạy trong WSL2, project trên các ổ đĩa Windows khai báo trong config, còn lại verify VPN routing + hiệu năng `/mnt` ở P0.5.1; Linux native cũng được hỗ trợ (đích deploy gov) · tiến độ đo bằng gate, không ràng buộc thời gian/số dev.
+Tên sản phẩm **yett** (CLI `yett`, package `yett`, config `~/.yett/`) · Python ≥3.11 · SQLite (v0.1–0.2) · Docker sandbox · single-tenant · chuẩn skills agentskills.io · clean-room bắt buộc với GoClaw (chỉ đọc docs, không đọc code Go) · platform: **chạy được trên Windows, macOS, Linux** — 4 cách cài (Docker Desktop / WSL2 / macOS native / Windows PowerShell), xem [`INSTALL.md`](INSTALL.md). Khuyến nghị host trong **Docker Desktop** (yett chạy trong container Linux → mọi tính năng đúng thiết kế). cmdguard chặn lệnh xóa cả POSIX lẫn Windows · tiến độ đo bằng gate, không ràng buộc thời gian/số dev.
 
 Chất lượng hành vi agent được giữ bằng **eval suite golden tasks** (v0.2): bộ kịch bản chuẩn chấm tự động, bắt buộc chạy khi sửa system prompt/skill/model — hành vi trôi là thấy ngay trong CI.
 
