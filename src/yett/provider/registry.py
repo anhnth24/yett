@@ -11,8 +11,8 @@ OPENAI_COMPAT_BASE_URLS: dict[str, str] = {
     "openai": "https://api.openai.com/v1",
     "anthropic_oai": "https://api.anthropic.com/v1",  # Anthropic có endpoint OpenAI-compat
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
-    "deepseek": "https://api.deepseek.com/v1",
-    "glm": "https://open.bigmodel.cn/api/paas/v4",
+    "deepseek": "https://api.deepseek.com",
+    "glm": "https://api.z.ai/api/paas/v4",  # quốc tế; TQ: https://open.bigmodel.cn/api/paas/v4
     "minimax": "https://api.minimax.io/v1",
     "grok": "https://api.x.ai/v1",
     "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",

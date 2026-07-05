@@ -2,31 +2,36 @@
 # Secret KHÔNG để trong file này — đặt qua biến môi trường YETT_SECRET_<TÊN IN HOA>.
 #   vd: export YETT_SECRET_LLM_KEY="sk-..."
 
-# ---- Provider: chọn MiniMax hoặc GLM (đều OpenAI-compatible) ----
+# ---- Provider ----
+# Chọn 1 provider. base_url có mặc định theo name (xem provider/registry.py), chỉ khai khi khác.
+# Provider hỗ trợ: glm, minimax, openai, anthropic_oai, gemini, deepseek, grok, qwen, mistral, groq.
+# Secret KHÔNG để trong file — đặt env YETT_SECRET_LLM_KEY. Giá xem config/pricing.yaml.
 
-# GLM 5.2 (Zhipu AI):
+# GLM 5.2 (Zhipu / Z.ai) — mặc định (endpoint quốc tế api.z.ai):
 provider:
-  name: openai_compat
-  model: glm-5.2                    # tên model theo bảng của Zhipu
-  api_key_secret: llm_key           # đọc từ env YETT_SECRET_LLM_KEY
-  base_url: https://open.bigmodel.cn/api/paas/v4
+  name: glm
+  model: glm-5.2                    # hoặc glm-4.6 (rẻ hơn), glm-4.5-air
+  api_key_secret: llm_key
   max_retries: 4
+  # base_url: https://open.bigmodel.cn/api/paas/v4   # bỏ comment nếu dùng endpoint TQ
 
-# MiniMax M3 (bỏ comment, comment block GLM ở trên nếu dùng):
+# MiniMax M3 (bỏ comment, comment GLM ở trên):
 # provider:
-#   name: openai_compat
+#   name: minimax
 #   model: MiniMax-M3
 #   api_key_secret: llm_key
-#   base_url: https://api.minimax.io/v1     # (bản quốc tế; bản TQ: https://api.minimaxi.com/v1)
-#   max_retries: 4
 
-# Provider dự phòng (tuỳ chọn) — failover khi provider chính lỗi cứng.
-# Ví dụ: chính GLM 5.2, dự phòng MiniMax M3 (cần key riêng):
+# Ví dụ khác: DeepSeek / Gemini / OpenAI / Anthropic
+#   name: deepseek   model: deepseek-chat
+#   name: gemini     model: gemini-2.5-flash
+#   name: openai     model: gpt-5.4-mini
+#   name: anthropic_oai  model: claude-haiku-4-5
+
+# Provider dự phòng (tuỳ chọn) — failover khi provider chính lỗi cứng:
 # fallback_provider:
-#   name: openai_compat
+#   name: minimax
 #   model: MiniMax-M3
 #   api_key_secret: llm_key_2
-#   base_url: https://api.minimax.io/v1
 
 budget:
   max_loop_iterations: 20
@@ -51,8 +56,13 @@ sandbox:
 # ---- Egress allowlist (domain web_fetch/search được phép) ----
 egress:
   allowlist:
-    - open.bigmodel.cn       # GLM API
-    - api.minimax.io         # MiniMax API
+    - api.z.ai               # GLM (quốc tế)
+    - open.bigmodel.cn       # GLM (TQ)
+    - api.minimax.io         # MiniMax
+    - api.deepseek.com       # DeepSeek
+    - generativelanguage.googleapis.com  # Gemini
+    - api.openai.com         # OpenAI
+    - api.anthropic.com      # Anthropic
     # - github.com
 
 # ---- Security (Policy Gate) ----

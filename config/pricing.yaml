@@ -1,9 +1,66 @@
-# Bảng giá cho cost ledger (USD / 1 triệu token). SỐ THAM KHẢO — đối soát với billing thật.
-# [Unverified] giá thay đổi theo thời gian; cập nhật theo trang giá của provider.
-openai_compat:
-  # GLM 5.2 (Zhipu) — [Unverified], điền theo bảng giá bigmodel.cn
-  glm-5.2: { input_per_mtok: 0.0, output_per_mtok: 0.0 }
-  # MiniMax M3 — [Unverified], điền theo bảng giá minimax
-  MiniMax-M3: { input_per_mtok: 0.0, output_per_mtok: 0.0 }
-  # fallback cho model chưa khai giá:
-  "*": { input_per_mtok: 0.0, output_per_mtok: 0.0 }
+# Bảng giá cho cost ledger — USD / 1 triệu token. Research 07/2026 từ trang chính thức.
+# Top-level key = TÊN PROVIDER trong config (khớp provider.name). model = api model id.
+# ⚠️ Giá thay đổi theo thời gian — cost ledger là ƯỚC TÍNH, đối soát với billing thật.
+# VERIFIED = lấy trực tiếp từ trang provider; UNVERIFIED = nguồn official-adjacent, cần xác nhận.
+
+# ── GLM (Zhipu / Z.ai) ── nguồn: docs.z.ai/guides/overview/pricing (VERIFIED)
+glm:
+  glm-5.2:      { input_per_mtok: 1.40, output_per_mtok: 4.40, cache_read_per_mtok: 0.26 }
+  glm-5:        { input_per_mtok: 1.00, output_per_mtok: 3.20 }
+  glm-4.6:      { input_per_mtok: 0.60, output_per_mtok: 2.20, cache_read_per_mtok: 0.11 }
+  glm-4.5-air:  { input_per_mtok: 0.20, output_per_mtok: 1.10 }
+  "*":          { input_per_mtok: 0.0,  output_per_mtok: 0.0 }
+
+# ── MiniMax ── nguồn: platform.minimax.io (UNVERIFIED — trang giá không load, số từ nguồn phụ)
+minimax:
+  MiniMax-M3:   { input_per_mtok: 0.30, output_per_mtok: 1.20 }   # [UNVERIFIED] promo 50%; list ~0.60/2.40
+  MiniMax-M2:   { input_per_mtok: 0.255, output_per_mtok: 1.00 }  # [UNVERIFIED]
+  "*":          { input_per_mtok: 0.0,  output_per_mtok: 0.0 }
+
+# ── OpenAI ── nguồn: developers.openai.com/api/docs/pricing (VERIFIED)
+openai:
+  gpt-5.5:       { input_per_mtok: 5.00, output_per_mtok: 30.00, cache_read_per_mtok: 0.50 }
+  gpt-5.4-mini:  { input_per_mtok: 0.75, output_per_mtok: 4.50,  cache_read_per_mtok: 0.075 }
+  "*":           { input_per_mtok: 0.0,  output_per_mtok: 0.0 }
+
+# ── Anthropic (endpoint OpenAI-compat) ── nguồn: platform.claude.com/docs/.../pricing (VERIFIED)
+anthropic_oai:
+  claude-opus-4-8:  { input_per_mtok: 5.00, output_per_mtok: 25.00, cache_read_per_mtok: 0.50 }
+  claude-sonnet-5:  { input_per_mtok: 2.00, output_per_mtok: 10.00, cache_read_per_mtok: 0.20 }
+  claude-haiku-4-5: { input_per_mtok: 1.00, output_per_mtok: 5.00,  cache_read_per_mtok: 0.10 }
+  "*":              { input_per_mtok: 0.0,  output_per_mtok: 0.0 }
+
+# ── Google Gemini (endpoint OpenAI-compat) ── nguồn: ai.google.dev/gemini-api/docs/pricing (VERIFIED)
+gemini:
+  gemini-2.5-pro:   { input_per_mtok: 1.25, output_per_mtok: 10.00, cache_read_per_mtok: 0.125 }
+  gemini-2.5-flash: { input_per_mtok: 0.30, output_per_mtok: 2.50,  cache_read_per_mtok: 0.03 }
+  "*":              { input_per_mtok: 0.0,  output_per_mtok: 0.0 }
+
+# ── DeepSeek ── nguồn: api-docs.deepseek.com/quick_start/pricing-details-usd (VERIFIED)
+# (lưu ý: alias deepseek-chat/reasoner dự kiến deprecate 2026-07-24 sang dòng V4)
+deepseek:
+  deepseek-chat:     { input_per_mtok: 0.27, output_per_mtok: 1.10, cache_read_per_mtok: 0.07 }
+  deepseek-reasoner: { input_per_mtok: 0.55, output_per_mtok: 2.19, cache_read_per_mtok: 0.14 }
+  "*":               { input_per_mtok: 0.0,  output_per_mtok: 0.0 }
+
+# ── xAI Grok ── nguồn: docs.x.ai/docs/models (VERIFIED)
+grok:
+  grok-4.3: { input_per_mtok: 1.25, output_per_mtok: 2.50 }
+  "*":      { input_per_mtok: 0.0,  output_per_mtok: 0.0 }
+
+# ── Alibaba Qwen (DashScope compatible-mode) ── nguồn: alibabacloud.com model-studio (UNVERIFIED)
+qwen:
+  qwen-max:  { input_per_mtok: 1.25, output_per_mtok: 3.75 }  # [UNVERIFIED] promo; list ~2.50/7.50
+  qwen-plus: { input_per_mtok: 0.40, output_per_mtok: 1.20 }  # [UNVERIFIED]
+  "*":       { input_per_mtok: 0.0,  output_per_mtok: 0.0 }
+
+# ── Mistral ── nguồn: mistral.ai/pricing/api (VERIFIED)
+mistral:
+  mistral-large-latest:  { input_per_mtok: 0.50, output_per_mtok: 1.50 }
+  mistral-medium-latest: { input_per_mtok: 1.50, output_per_mtok: 7.50 }
+  "*":                   { input_per_mtok: 0.0,  output_per_mtok: 0.0 }
+
+# ── Meta Llama (qua Groq) ── nguồn: bên thứ ba (UNVERIFIED)
+groq:
+  llama-4-maverick: { input_per_mtok: 0.15, output_per_mtok: 0.60 }  # [UNVERIFIED]
+  "*":              { input_per_mtok: 0.0,  output_per_mtok: 0.0 }
