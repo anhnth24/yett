@@ -1,32 +1,81 @@
 """DockerSandbox — chạy lệnh trong container hardened (spec P0-P1 §3.7).
 
-Bản v0.1: bọc `docker run` qua CLI với hardening flags. (P0.2: thay bằng vendored
-Hermes DockerEnvironment để tái dùng session lifecycle; interface Sandbox giữ nguyên.)
+Bọc `docker run` qua CLI với hardening flags CỨNG (không cấu hình thêm ngoài SandboxCfg):
+`--network` (mặc định "none" — không egress), `--cap-drop ALL`, `--security-opt
+no-new-privileges`, `--read-only` rootfs + `--tmpfs /tmp` cho scratch (ghi tạm vì rootfs
+read-only), `--user` non-root (65534:65534 = nobody:nogroup), `--pids-limit`, `--memory`/
+`--cpus` theo SandboxCfg, `--rm`. Timeout xử lý ở tầng orchestration (asyncio.wait_for +
+kill tiến trình khi quá hạn), không phải flag `docker run`.
 
-Hardening: --network none (mặc định), --cap-drop ALL, --security-opt no-new-privileges,
---read-only rootfs (trừ mount project), memory/cpu limit, --rm.
+Mount workspace/project (rw) do App tính & truyền vào qua `mounts` (host path -> container
+path). `-w` (cwd) nhận thẳng path container đã map sẵn ở phía gọi (xem `app.py`); DockerSandbox
+không tự suy path — chỉ phát flag.
+
+(P0.2 tương lai: thay bằng vendored Hermes DockerEnvironment để tái dùng session lifecycle;
+interface `Sandbox` giữ nguyên.)
 """
 
 from __future__ import annotations
 
 import asyncio
+import shutil
+import subprocess
 
 from yett.config.models import SandboxCfg
+from yett.errors import UserFacingError
 from yett.sandbox.base import ExecResult
+
+_DOCKER_PROBE_TIMEOUT_SEC = 5
+
+
+def docker_unavailable_reason() -> str | None:
+    """Trả `None` nếu Docker CLI + daemon sẵn sàng; ngược lại trả lý do (tiếng Việt, ngắn)."""
+    if shutil.which("docker") is None:
+        return "không tìm thấy lệnh 'docker' trong PATH"
+    try:
+        result = subprocess.run(
+            ["docker", "info"], capture_output=True, timeout=_DOCKER_PROBE_TIMEOUT_SEC, text=True
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"gọi 'docker info' lỗi/timeout ({e})"
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip().splitlines()
+        return "daemon chưa chạy ('docker info' thất bại" + (f": {detail[-1]}" if detail else "") + ")"
+    return None
+
+
+def probe_docker() -> None:
+    """Fail-closed: raise `UserFacingError` rõ nếu Docker CLI/daemon chưa sẵn sàng.
+
+    Gọi trước khi dựng `DockerSandbox` (App) — KHÔNG bao giờ hạ cấp âm thầm về LocalSandbox."""
+    reason = docker_unavailable_reason()
+    if reason:
+        raise UserFacingError(
+            f"sandbox.backend='docker' nhưng Docker chưa sẵn sàng ({reason}). "
+            "Cài/mở Docker Desktop (Windows/macOS) hoặc khởi động dịch vụ docker (Linux) rồi "
+            "thử lại; hoặc đổi tạm sang sandbox.backend='local' (CHỈ dev/test — KHÔNG cô lập) "
+            "trong config. Chạy 'yett doctor' để xem chi tiết cài đặt."
+        )
 
 
 class DockerSandbox:
-    def __init__(self, cfg: SandboxCfg, image: str = "python:3.11-slim", mounts: dict[str, str] | None = None) -> None:
+    def __init__(
+        self, cfg: SandboxCfg, image: str = "python:3.11-slim", mounts: dict[str, str] | None = None
+    ) -> None:
         self._cfg = cfg
         self._image = image
         self._mounts = mounts or {}  # host_path -> container_path (read-write project mounts)
 
-    def _base_flags(self, timeout: int) -> list[str]:
+    def _base_flags(self) -> list[str]:
         flags = [
             "docker", "run", "--rm",
-            "--network", self._cfg.network if self._cfg.network != "none" else "none",
+            "--network", self._cfg.network,
             "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges",
+            "--read-only",
+            "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m",
+            "--user", "65534:65534",
+            "--pids-limit", "128",
             "--memory", self._cfg.mem_limit,
             "--cpus", str(self._cfg.cpus),
         ]
@@ -38,7 +87,7 @@ class DockerSandbox:
         self, cmd: list[str], *, cwd: str | None = None, timeout: int | None = None, env: dict | None = None
     ) -> ExecResult:
         timeout = timeout or self._cfg.timeout_sec
-        flags = self._base_flags(timeout)
+        flags = self._base_flags()
         if cwd:
             flags += ["-w", cwd]
         for k, v in (env or {}).items():
