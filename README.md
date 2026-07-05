@@ -37,13 +37,14 @@ Chọn 1 trong 10+ model top (GLM 5.2, MiniMax M3, DeepSeek, Gemini, GPT-5.5, Cl
 | Memory: workspace + review gate + FTS5 (tiếng Việt) | ✅ | `test_memory` |
 | Remote ops: host profile + ssh_exec + log_read + vpn | ✅ (backend inject) | `test_remote_db` |
 | DB tools: db_query/db_config read-only 4 lớp | ✅ (executor inject) | `test_remote_db` |
-| Skills: loader + disclosure + lint + review gate | ✅ | `test_skills_hooks_sched` |
-| Hooks: mutate/deny + cách ly lỗi | ✅ | `test_skills_hooks_sched` |
+| Skills: loader + disclosure + lint + review gate **(wired vào `yett chat`)** | ✅ | `test_skills_hooks_sched`, `test_group2_wired` |
+| Hooks: mutate/deny + cách ly lỗi **(wired)** | ✅ | `test_skills_hooks_sched` |
 | Scheduler: cron + overlap + unattended approval timeout | ✅ | `test_skills_hooks_sched` |
 | Eval suite golden tasks + web_search | ✅ | `test_eval_websearch` |
 | Policy engine (policy-as-config, drop-in) + immutable core | ✅ | `test_phase3` |
 | Audit hash-chain + retention + channel gating + analytics | ✅ | `test_phase3`, `test_phase3_extra` |
-| Subagent delegation 1 cấp (không leo thang quyền) | ✅ | `test_phase3` |
+| Subagent delegation 1 cấp (không leo thang quyền) **(wired)** | ✅ | `test_phase3`, `test_group2_wired` |
+| **DB query read-only (sqlite thật + lazy postgres/mysql), wired** | ✅ | `test_group2_wired` |
 | RPC code execution (broker + caps + secret strip) | ✅ (in-process; production dùng socket-in-container) | `test_phase3_extra` |
 | **Adapter LLM thật (OpenAI-compatible: GLM 5.2, MiniMax M3...)** | ✅ (cần API key để gọi mạng thật) | `test_openai_compat` |
 | `yett chat` nối config thật + provider factory + secret store | ✅ | `test_openai_compat`, verify build_app |

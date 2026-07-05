@@ -52,6 +52,7 @@ class AgentLoop:
         approver: Approver | None = None,
         auditor: Auditor | None = None,
         cost_fn: Callable[[ChatResult], float] | None = None,
+        hooks=None,
     ) -> None:
         self._router = router
         self._gate = gate
@@ -63,6 +64,7 @@ class AgentLoop:
         self._approver = approver
         self._auditor = auditor
         self._cost_fn = cost_fn or (lambda r: 0.0)
+        self._hooks = hooks
 
     async def run_turn(
         self,
@@ -72,6 +74,7 @@ class AgentLoop:
         turn_id: str,
         cancel: CancelToken | None = None,
         session_ctx=None,
+        allowed_tools: set[str] | None = None,
     ) -> TurnResult:
         cancel = cancel or CancelToken()
         session_ctx = session_ctx or _SimpleCtx(session_key)
@@ -96,7 +99,7 @@ class AgentLoop:
                     trace_id=root.trace_id, parent_id=root.id, session_key=session_key,
                 )
                 try:
-                    res = await self._router.chat(ctx.messages, self._registry.schemas())
+                    res = await self._router.chat(ctx.messages, self._registry.schemas(allowed_tools))
                 except ContextOverflow:
                     ctx.prune(self._cfg.context_token_budget // 2)
                     self._tracer.end_span(span, end_ts=self._clock(), event="context_overflow_pruned")
@@ -126,7 +129,7 @@ class AgentLoop:
                     result = await execute_tool(
                         tc.name, tc.args, session_ctx,
                         gate=self._gate, registry=self._registry,
-                        approver=self._approver, auditor=self._auditor,
+                        approver=self._approver, auditor=self._auditor, hooks=self._hooks,
                     )
                     self._tracer.end_span(tspan, end_ts=self._clock(), is_error=result.is_error)
                     ctx.add_tool_result(tc.id, result.content)

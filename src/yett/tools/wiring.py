@@ -32,6 +32,7 @@ async def execute_tool(
     registry: Registry,
     approver: Approver | None = None,
     auditor: Auditor | None = None,
+    hooks=None,  # HookRunner | None — chạy Pre/PostToolUse (mutate/deny)
 ) -> ToolResult:
     dec: Decision = safe_evaluate(gate, name, args, ctx)
     if auditor:
@@ -48,6 +49,16 @@ async def execute_tool(
         if not approved:
             return ToolResult.error("[DENIED] approval bị từ chối hoặc hết hạn")
 
+    # PreToolUse hooks — sau Gate (không nới được deny của Gate), có thể mutate args hoặc deny.
+    if hooks is not None:
+        from yett.hooks.runner import HookEvent
+
+        pre = await hooks.run(HookEvent("PreToolUse", name, args))
+        if pre.action == "deny":
+            return ToolResult.error(f"[DENIED] hook: {pre.reason}")
+        if pre.mutated_args is not None:
+            args = pre.mutated_args
+
     tool = registry.get(name)
     try:
         tool.validate(args)
@@ -55,4 +66,14 @@ async def execute_tool(
     except UserFacingError as e:
         # Lỗi agent-đọc-được (sai schema, path ngoài scope...) → trả về để agent tự sửa.
         return ToolResult.error(str(e))
-    return filter_apply(raw, untrusted=name in _UNTRUSTED_TOOLS)
+
+    result = filter_apply(raw, untrusted=name in _UNTRUSTED_TOOLS)
+
+    # PostToolUse hooks — có thể mutate result.
+    if hooks is not None:
+        from yett.hooks.runner import HookEvent
+
+        post = await hooks.run(HookEvent("PostToolUse", name, args, result.content))
+        if post.mutated_result is not None:
+            return ToolResult(ok=result.ok, content=post.mutated_result, is_error=result.is_error)
+    return result

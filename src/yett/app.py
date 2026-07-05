@@ -27,6 +27,7 @@ from yett.tools.projects import ProjectScope
 from yett.tools.registry import Registry
 from yett.sandbox.base import Sandbox
 from yett.sandbox.local import LocalSandbox
+from yett.skills.loader import SkillLoader
 
 
 def build_app(
@@ -42,7 +43,8 @@ def build_app(
     pricing = load_pricing(pricing_path) if pricing_path else {}
     sandbox = LocalSandbox() if cfg.sandbox.backend == "local" else None  # docker dựng riêng khi cần
     return App(
-        cfg, provider, state_dir=state_dir, pricing=pricing, sandbox=sandbox, fallback=fallback
+        cfg, provider, state_dir=state_dir, pricing=pricing, sandbox=sandbox,
+        fallback=fallback, secrets=secrets,
     )
 
 
@@ -57,6 +59,7 @@ class App:
         sandbox: Sandbox | None = None,
         fallback: Provider | None = None,
         fetcher=None,
+        secrets=None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.cfg = cfg
@@ -77,30 +80,106 @@ class App:
         if fetcher is not None:
             self.registry.register(WebFetchTool(cfg.egress.allowlist, fetcher))
 
+        # --- Nhóm 2 wired vào App ---
+        self._secrets = secrets
+        self.skill_loader: SkillLoader | None = None
+        if cfg.skills_enabled:
+            self._wire_skills(state_dir)
+        if cfg.databases:
+            self._wire_db()
+        if cfg.search is not None and secrets is not None:
+            self._wire_search()
+
         self.gate = BasicGate(cfg.security)
+        # Hooks: rỗng mặc định (điểm cắm sẵn; nạp hook từ config sau).
+        from yett.hooks.runner import HookRunner
+        self.hooks = HookRunner([])
+
         router = FailoverRouter(provider, fallback, max_retries=cfg.provider.max_retries)
 
         def cost_fn(res: ChatResult) -> float:
             return compute_cost(provider.name(), res.raw_model, res.usage, self._pricing)
 
+        self._loop_cfg = LoopConfig(
+            max_iterations=cfg.budget.max_loop_iterations,
+            context_token_budget=cfg.budget.context_token_budget,
+        )
         self.loop = AgentLoop(
             router, self.gate, self.registry, self.spanstore, self.checkpoints,
-            cfg=LoopConfig(
-                max_iterations=cfg.budget.max_loop_iterations,
-                context_token_budget=cfg.budget.context_token_budget,
-            ),
-            clock=clock,
-            cost_fn=cost_fn,
+            cfg=self._loop_cfg, clock=clock, cost_fn=cost_fn, hooks=self.hooks,
         )
+        # Subagent: đăng ký delegate sau khi có loop (runner dùng chính loop này).
+        if cfg.subagents_enabled:
+            self._wire_subagents()
+
+    def _wire_skills(self, state_dir: Path) -> None:
+        from yett.skills.loader import SkillLoader
+        from yett.skills.tool import LoadSkillTool
+
+        tier_dirs = {
+            "bundled": Path("skills"),
+            "managed": state_dir / "skills",
+            "workspace": Path(self.cfg.workspace_root) / "skills",
+        }
+        self.skill_loader = SkillLoader(tier_dirs)
+        self.registry.register(LoadSkillTool(self.skill_loader))
+
+    def _wire_db(self) -> None:
+        from yett.tools.db.db_query import DbProfile, DbQueryTool
+        from yett.tools.db.executor import RealDbExecutor
+
+        profiles = {
+            name: DbProfile(driver=p.driver, dsn_secret=p.dsn_secret, readonly=p.readonly)
+            for name, p in self.cfg.databases.items()
+        }
+        self.registry.register(DbQueryTool(profiles, RealDbExecutor(), self._secrets))
+
+    def _wire_search(self) -> None:
+        # web_search cần search backend cụ thể (nối sau); đăng ký khi có.
+        return None
+
+    def _wire_subagents(self) -> None:
+        from yett.subagent.delegate import DelegateCtx, DelegateTool
+        from yett.subagent.definition import SubagentDef
+
+        agents_dir = Path(self.cfg.workspace_root) / "agents"
+
+        async def runner(sub: SubagentDef, child: DelegateCtx, task: str) -> str:
+            ctx = assemble_context(sub.system_prompt, task)
+            res = await self.loop.run_turn(
+                ctx, session_key=child.session_key, turn_id=f"sub-{int(self._clock()*1000)}",
+                session_ctx=child, allowed_tools=set(sub.toolset),
+            )
+            return res.text
+
+        self.registry.register(DelegateTool(agents_dir, runner))
 
     async def chat(self, message: str, *, session_key: str = "main", turn_id: str | None = None) -> TurnResult:
+        base = "Bạn là yett, trợ lý fail-closed."
+        if self.skill_loader is not None:
+            menu = self.skill_loader.menu()
+            if menu:
+                lines = "\n".join(f"- {s['name']}: {s['description']}" for s in menu)
+                base += f"\n\nSkill khả dụng (gọi load_skill để lấy hướng dẫn):\n{lines}"
         system = self.workspace.build_system_prompt(
-            "Bạn là yett, trợ lý fail-closed.", token_budget=self.cfg.budget.context_token_budget // 2
+            base, token_budget=self.cfg.budget.context_token_budget // 2
         )
         ctx = assemble_context(system, message)
         tid = turn_id or f"turn-{int(self._clock()*1000)}"
-        return await self.loop.run_turn(ctx, session_key=session_key, turn_id=tid)
+        # session_ctx mang allowed_tools = tất cả (cho phép delegate ở cấp cha)
+        parent = _MainCtx(session_key, set(self.registry.names()))
+        return await self.loop.run_turn(ctx, session_key=session_key, turn_id=tid, session_ctx=parent)
 
     def close(self) -> None:
         self.spanstore.close()
         self.checkpoints.close()
+
+
+class _MainCtx:
+    """session_ctx cấp cha: mang allowed_tools (để delegate kiểm toolset con ⊆ cha)."""
+
+    def __init__(self, session_key: str, allowed_tools: set[str]) -> None:
+        self.session_key = session_key
+        self.allowed_tools = allowed_tools
+        self.is_subagent = False
+        self.parent_span_id: str | None = None

@@ -52,15 +52,30 @@ class SecurityCfg(BaseModel):
     approval_timeout_sec: int = 300
 
 
+class DbProfileCfg(BaseModel):
+    driver: Literal["postgres", "mysql", "sqlserver", "sqlite"]
+    dsn_secret: str  # connection string là secret; model chỉ thấy tên profile
+    readonly: bool = True
+
+
+class SearchCfg(BaseModel):
+    api_key_secret: str
+    # search backend cụ thể nối sau; hiện giữ tên key để không lộ giá trị
+
+
 class HarnessCfg(BaseModel):
     provider: ProviderCfg
     fallback_provider: ProviderCfg | None = None
     budget: BudgetCfg = Field(default_factory=BudgetCfg)
     projects: dict[str, ProjectCfg] = Field(default_factory=dict)
+    databases: dict[str, DbProfileCfg] = Field(default_factory=dict)
+    search: SearchCfg | None = None
     egress: EgressCfg = Field(default_factory=EgressCfg)
     sandbox: SandboxCfg = Field(default_factory=SandboxCfg)
     security: SecurityCfg = Field(default_factory=SecurityCfg)
-    secret_backend: Literal["keyring", "age", "env"] = "env"
+    skills_enabled: bool = True
+    subagents_enabled: bool = True
+    secret_backend: Literal["keyring", "age", "env", "file"] = "env"
     timezone: str = "Asia/Ho_Chi_Minh"
     workspace_root: Path
 

@@ -38,12 +38,24 @@ budget:
   context_token_budget: 120000
   monthly_cost_alert_usd: 50
 
-# ---- Project của bạn (trên ổ đĩa Windows, đường dẫn WSL2) ----
+# ---- Project của bạn (trên ổ đĩa Windows, đường dẫn WSL2/container) ----
 projects:
   go-learn:
     path: /mnt/d/work/go-learn
   # them-project:
   #   path: /mnt/c/Users/ban/source/project-x
+
+# ---- Database để agent query (chỉ đọc; connection string là secret) ----
+# databases:
+#   uat:
+#     driver: postgres          # postgres | mysql | sqlite | sqlserver
+#     dsn_secret: uat_dsn       # đặt env YETT_SECRET_UAT_DSN hoặc secrets/uat_dsn
+#     readonly: true
+# Nhớ thêm rule allowlist: { tool: db_query, effect: allow } ở mục security bên dưới.
+
+# ---- Bật/tắt skills & subagents ----
+skills_enabled: true
+subagents_enabled: true
 
 # ---- Sandbox ----
 sandbox:
@@ -78,6 +90,12 @@ security:
     - tool: exec
       arg_patterns: { cmd: "^(git|ls|cat|grep|python|pytest|npm|go) " }
       effect: allow
+    - tool: load_skill              # cho phép agent nạp hướng dẫn skill
+      effect: allow
+    - tool: delegate                # cho phép ủy quyền cho subagent
+      effect: allow
+    # - tool: db_query              # bỏ comment nếu dùng DB (chỉ SELECT — sqlguard đã chặn ghi)
+    #   effect: allow
     # Lệnh exec khác → mặc định DENY (fail-closed). Thêm rule nếu cần.
 
 secret_backend: env
