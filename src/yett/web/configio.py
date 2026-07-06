@@ -14,6 +14,22 @@ def read_config_text(path: str | Path) -> str:
     return p.read_text(encoding="utf-8") if p.exists() else ""
 
 
+def read_config_text_redacted(path: str | Path) -> str:
+    """Đọc config để hiển thị qua web UI, đã redact secret (dùng chung filter Phase 5
+    — `yett.security.filters.redact`, KHÔNG tự viết lại pattern, tránh lặp lỗ hổng cũ
+    như miss format `sk-cp-`).
+
+    LƯU Ý (trade-off có chủ đích): endpoint lưu (`write_config_text`) KHÔNG merge lại
+    giá trị gốc — nếu người dùng bấm Lưu mà không sửa dòng đã bị che, giá trị secret
+    thật trên đĩa sẽ bị ghi đè bằng chuỗi `[REDACTED]` literal. Khuyến nghị (UI đã nhắc
+    ở tab Cấu hình): giữ secret trong `secrets/` hoặc biến môi trường, không sửa secret
+    trực tiếp qua tab này.
+    """
+    from yett.security.filters import redact
+
+    return redact(read_config_text(path))
+
+
 def validate_config_text(text: str) -> str | None:
     """Trả None nếu hợp lệ; ngược lại trả thông báo lỗi (không lưu nếu lỗi)."""
     try:

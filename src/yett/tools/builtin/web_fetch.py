@@ -1,7 +1,10 @@
 """web_fetch (spec P0-P1). Chỉ fetch domain trong egress allowlist (no-egress guard).
 
-Gate cũng chặn domain lạ, nhưng tool tự kiểm lần nữa (defense in depth). HTTP client
-injectable để test offline (không gọi mạng thật trong test).
+Gate cũng chặn domain lạ, nhưng tool tự kiểm lần nữa (defense in depth) — CHỈ kiểm
+URL đầu, không thấy redirect hop. [RT-7] Chặn SSRF qua redirect/rebinding PHẢI nằm ở
+tầng HTTP client (`yett.tools.builtin.http_fetcher.SafeHttpFetcher`), không phải ở đây
+— fetcher injectable để test offline (không gọi mạng thật trong test) và để `App` wire
+fetcher SSRF-safe thật trong runtime.
 """
 
 from __future__ import annotations

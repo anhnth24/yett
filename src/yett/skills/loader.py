@@ -57,8 +57,10 @@ class SkillLoader:
                     try:
                         s = parse_skill_md(md.read_text(encoding="utf-8"), tier)
                         out[s.name] = s
-                    except UserFacingError:
-                        continue  # skill hỏng frontmatter → bỏ qua
+                    except Exception:  # noqa: BLE001 — 1 SKILL.md hỏng (frontmatter thiếu,
+                        # YAML lỗi cú pháp, encoding sai...) không được chặn discovery của
+                        # mọi skill khác trong cùng thư mục/tier.
+                        continue
         return out
 
     def menu(self) -> list[dict]:

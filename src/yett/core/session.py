@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 
 from yett.provider.base import Message
@@ -12,10 +11,6 @@ from yett.provider.base import Message
 class Session:
     key: str
     history: list[Message] = field(default_factory=list)
-    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-
-    def lock(self) -> asyncio.Lock:
-        return self._lock
 
 
 class SessionManager:

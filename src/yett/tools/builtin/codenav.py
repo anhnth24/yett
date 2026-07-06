@@ -7,8 +7,10 @@ output có giới hạn, bỏ qua thư mục/nhiễu và file nhị phân).
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from yett.errors import UserFacingError
@@ -17,6 +19,16 @@ from yett.tools.builtin.files import ReadFileTool
 from yett.tools.projects import ProjectScope
 
 _MAX_BATCH_OPS = 10  # trần số thao tác trong một lần search gộp
+
+# [ReDoS guard] `pattern` do agent/model đưa vào, chạy qua module `re` (backtracking,
+# không có trần độ phức tạp built-in) trên nội dung file THẬT — 1 regex thảm hại (vd
+# `(a+)+$`) có thể treo vô hạn. Chạy trong thread pool riêng + timeout: [Inference]
+# Python không kill được 1 thread OS đang chạy CPU-bound (`re.search` không có điểm
+# ngắt an toàn) nên timeout KHÔNG dừng được thread đang treo — nó chỉ đảm bảo turn/agent
+# không bị đơ theo (event loop asyncio không bị chặn, người dùng nhận lỗi ngay) và giới
+# hạn số thread bị "rò" cùng lúc ở `max_workers`.
+_REGEX_TIMEOUT_SEC = 5.0
+_GREP_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="yett-grep")
 
 # Thư mục bỏ qua khi duyệt/grep (nhiễu, nặng, không phải source người đọc).
 _SKIP_DIRS = frozenset({
@@ -126,16 +138,30 @@ class GrepTool:
         else:
             roots = self._scope.roots()
 
-        hits: list[str] = []
-        for root in roots:
-            if self._search(root, rx, glob, cap, hits):
-                break
+        loop = asyncio.get_running_loop()
+        try:
+            hits = await asyncio.wait_for(
+                loop.run_in_executor(_GREP_EXECUTOR, self._search_all, roots, rx, glob, cap),
+                timeout=_REGEX_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            return ToolResult.error(
+                f"[DENIED] tìm kiếm vượt {_REGEX_TIMEOUT_SEC}s (regex quá phức tạp hoặc phạm "
+                "vi quá lớn) — thu hẹp pattern/path rồi thử lại"
+            )
         if not hits:
             return ToolResult.success("(không có match)")
         body = "\n".join(hits)
         if len(hits) >= cap:
             body += f"\n… (đạt trần {cap} match — thu hẹp pattern/path để xem thêm)"
         return ToolResult.success(body)
+
+    def _search_all(self, roots: list[Path], rx, glob, cap: int) -> list[str]:
+        hits: list[str] = []
+        for root in roots:
+            if self._search(root, rx, glob, cap, hits):
+                break
+        return hits
 
     def _search(self, root: Path, rx, glob, cap: int, hits: list[str]) -> bool:
         files: list[Path] = [root] if root.is_file() else []
@@ -228,3 +254,5 @@ class SearchTool:
             return f"### {label}\n{res.content}", res.is_error
         except UserFacingError as e:
             return f"### {label}\n[lỗi] {e}", True
+        except Exception as e:  # noqa: BLE001 — 1 thao tác lỗi không được crash cả batch
+            return f"### {label}\n[lỗi không mong đợi] {e}", True

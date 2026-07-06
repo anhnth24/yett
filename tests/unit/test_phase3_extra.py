@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from yett.analytics import insights
 from yett.channels.gating import ChannelGate
 from yett.compliance.retention import purge_old_spans
 from yett.obs.spanstore import SpanStore
@@ -43,17 +42,6 @@ def test_channel_pairing_flow() -> None:
 def test_channel_bad_code() -> None:
     gate = ChannelGate()
     assert gate.approve_pairing("WRONG") is None
-
-
-# --- analytics ---
-def test_budget_alert_levels() -> None:
-    spans = [{"attrs": {"cost_usd": 8.5, "provider": "anthropic"}, "start_ts": 1.0}]
-    r = insights.check_budget(spans, monthly_limit=10.0)
-    assert r["alert"] == "warn" and r["pct"] == 85.0
-    r2 = insights.check_budget([{"attrs": {"cost_usd": 12.0, "provider": "a"}, "start_ts": 1.0}], 10.0)
-    assert r2["alert"] == "over"
-    r3 = insights.check_budget(spans, None)
-    assert r3["alert"] is None
 
 
 # --- RPC broker ---

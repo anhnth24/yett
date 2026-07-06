@@ -16,7 +16,6 @@ class SpanKind(Enum):
     AGENT = 0
     LLM_CALL = 1
     TOOL_CALL = 2
-    EMBEDDING = 3
     EVENT = 4
 
 

@@ -12,6 +12,12 @@ from yett.errors import UserFacingError
 class HostProfile(BaseModel):
     address: str
     auth: str  # "keyfile:<secret_name>" — key qua secret store
+    port: int = 22
+    # Pin known_hosts riêng cho host này (đường dẫn file known_hosts, hoặc chuỗi
+    # known_hosts-format asyncssh chấp nhận). None -> dùng known_hosts hệ thống mặc định
+    # của client SSH (vd `~/.ssh/known_hosts`, `/etc/ssh/ssh_known_hosts`) — KHÔNG tắt
+    # verify (khác với `known_hosts=None` cũ, vốn tắt hẳn xác thực host key).
+    known_hosts: str | None = None
     vpn_required: str | None = None
     tier: Literal["uat", "restricted"] = "uat"
     log_paths: list[str] = Field(default_factory=list)
