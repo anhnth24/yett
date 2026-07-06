@@ -29,7 +29,10 @@ class CronJob:
 
 class CronStore:
     def __init__(self, db_path: str | Path) -> None:
-        self._conn = sqlite3.connect(str(db_path))
+        # check_same_thread=False: dùng chung từ thread scheduler nền + thread handler web
+        # (nhất quán với SpanStore/CheckpointStore/SessionStore). Ghi được serialize ở tầng
+        # gọi (scheduler tick single-thread; web ghi job qua thao tác người dùng, tần suất thấp).
+        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 
@@ -63,6 +66,28 @@ class CronStore:
             (now, next_run, job_id),
         )
         self._conn.commit()
+
+    def list_all(self) -> list[dict]:
+        """Mọi job (cho UI): kèm next_run/last_run/running. Không lọc theo hạn."""
+        cur = self._conn.execute(
+            "SELECT id,spec,tz,prompt,session_key,next_run,running,last_run "
+            "FROM cron_jobs ORDER BY next_run"
+        )
+        cols = ("id", "spec", "tz", "prompt", "session_key", "next_run", "running", "last_run")
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+    def trigger(self, job_id: str) -> bool:
+        """Đẩy job về 'tới hạn ngay' (next_run=0) + gỡ cờ running kẹt. True nếu job tồn tại."""
+        cur = self._conn.execute(
+            "UPDATE cron_jobs SET next_run=0, running=0 WHERE id=?", (job_id,)
+        )
+        self._conn.commit()
+        return cur.rowcount == 1
+
+    def delete(self, job_id: str) -> bool:
+        cur = self._conn.execute("DELETE FROM cron_jobs WHERE id=?", (job_id,))
+        self._conn.commit()
+        return cur.rowcount == 1
 
     def close(self) -> None:
         self._conn.close()
@@ -118,6 +143,75 @@ def compute_next(spec: str, now: float, tz: str) -> float | None:
 
             base = datetime.fromtimestamp(now, tz=_resolve_tzinfo(tz))
             return float(croniter(val, base).get_next(float))
+        except ImportError:
+            # Không có croniter → parser nội bộ (đúng subset phổ biến), KHÔNG âm thầm "mỗi giờ".
+            return _cron_next_local(val, now, tz)
         except Exception:
-            return now + 3600.0  # fallback: mỗi giờ (thiếu croniter hoặc spec parse lỗi)
+            return None  # spec cron sai → None (caller báo lỗi), không đoán bừa lịch
     return None
+
+
+def _cron_field_match(val: int, field: str) -> bool:
+    """Khớp 1 trường cron: '*' | '*/n' | 'a-b' | 'a,b,c' | 'a' (phân tách bằng phẩy)."""
+    for part in field.split(","):
+        try:
+            if part == "*":
+                return True
+            if part.startswith("*/"):
+                step = int(part[2:])
+                if step > 0 and val % step == 0:
+                    return True
+            elif "-" in part:
+                a, b = (int(x) for x in part.split("-", 1))
+                if a <= val <= b:
+                    return True
+            elif int(part) == val:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _cron_next_local(expr: str, now: float, tz: str) -> float | None:
+    """Parser cron 5 trường (m h dom mon dow) không cần croniter. Hỗ trợ * , */n, a-b, a,b,c.
+    Semantics dom/dow theo Vixie: cả hai đều khác '*' → OR; có '*' → AND. Trả epoch lần khớp
+    kế (> now) hoặc None nếu spec sai / không khớp trong 366 ngày."""
+    from datetime import datetime, timedelta
+
+    fields = expr.split()
+    if len(fields) != 5:
+        return None
+    mi, ho, dom, mon, dow = fields
+    try:
+        t = (datetime.fromtimestamp(now, tz=_resolve_tzinfo(tz))
+             .replace(second=0, microsecond=0) + timedelta(minutes=1))
+        for _ in range(366 * 24 * 60):  # cận trên 366 ngày → không kẹt vô hạn
+            cdow = (t.weekday() + 1) % 7  # cron: 0=CN..6=T7
+            dom_ok = _cron_field_match(t.day, dom)
+            dow_ok = _cron_field_match(cdow, dow)
+            day_ok = (dom_ok or dow_ok) if (dom != "*" and dow != "*") else (dom_ok and dow_ok)
+            if (_cron_field_match(t.minute, mi) and _cron_field_match(t.hour, ho)
+                    and day_ok and _cron_field_match(t.month, mon)):
+                return t.timestamp()
+            t += timedelta(minutes=1)
+    except (ValueError, OverflowError):
+        return None
+    return None
+
+
+def initial_next_run(spec: str, now: float, tz: str) -> float | None:
+    """next_run KHỞI TẠO khi thêm job. Khác compute_next: at:<iso> trả thời điểm iso (nếu còn
+    tương lai) thay vì None — để job at: một-lần lên lịch được. Recurring dùng compute_next."""
+    kind, _, val = spec.partition(":")
+    if kind == "at":
+        from datetime import datetime
+
+        try:
+            dt = datetime.fromisoformat(val)
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_resolve_tzinfo(tz))
+        ts = dt.timestamp()
+        return ts if ts > now else None
+    return compute_next(spec, now, tz)

@@ -181,6 +181,65 @@ def test_compute_next_cron_respects_declared_timezone(monkeypatch) -> None:
     assert captured["base"].utcoffset().total_seconds() == 0
 
 
+def test_cron_next_local_weekly_monday() -> None:
+    """Parser cron nội bộ (khi thiếu croniter): '0 8 * * 1' phải ra 08:00 thứ Hai KẾ,
+    KHÔNG phải 'mỗi giờ' như fallback cũ (bug next_run gần)."""
+    from datetime import datetime, timedelta, timezone
+
+    from yett.sched.cron import _cron_next_local
+
+    tzinfo = timezone(timedelta(hours=7))
+    now = datetime(2026, 7, 8, 13, 35, tzinfo=tzinfo)  # thứ Tư 13:35
+    nxt = _cron_next_local("0 8 * * 1", now.timestamp(), "Asia/Ho_Chi_Minh")
+    assert nxt is not None
+    got = datetime.fromtimestamp(nxt, tz=tzinfo)
+    assert (got.hour, got.minute) == (8, 0)
+    assert got.weekday() == 0 and got > now  # thứ Hai (Mon=0), ở tương lai
+
+
+def test_cron_next_local_step_and_bad() -> None:
+    from datetime import datetime, timezone
+
+    from yett.sched.cron import _cron_next_local
+
+    now = datetime(2026, 1, 1, 10, 7, tzinfo=timezone.utc)
+    got = datetime.fromtimestamp(
+        _cron_next_local("*/15 * * * *", now.timestamp(), "UTC"), tz=timezone.utc)
+    assert (got.hour, got.minute) == (10, 15)
+    assert _cron_next_local("khong-phai-cron", 0.0, "UTC") is None
+    assert _cron_next_local("0 8 * *", 0.0, "UTC") is None  # thiếu trường → None
+
+
+def test_initial_next_run_at_future_past_every() -> None:
+    from datetime import datetime, timezone
+
+    from yett.sched.cron import initial_next_run
+
+    fut = datetime(2030, 1, 1, 9, 0, tzinfo=timezone.utc)
+    ts = initial_next_run("at:2030-01-01T09:00:00+00:00", 0.0, "UTC")
+    assert ts is not None and abs(ts - fut.timestamp()) < 1  # at: tương lai → lên lịch được
+    past_now = datetime(2020, 1, 1, tzinfo=timezone.utc).timestamp()
+    assert initial_next_run("at:2000-01-01T00:00:00+00:00", past_now, "UTC") is None  # quá khứ
+    assert initial_next_run("every:60", 100.0, "UTC") == 160.0
+
+
+def test_cronstore_list_trigger_delete(tmp_path) -> None:
+    from yett.sched.cron import CronJob, CronStore
+
+    s = CronStore(tmp_path / "cron.db")
+    try:
+        s.add(CronJob(id="j1", spec="every:60", tz="UTC", prompt="p", session_key="main"),
+              next_run=1000.0)
+        rows = s.list_all()
+        assert len(rows) == 1 and rows[0]["id"] == "j1" and rows[0]["next_run"] == 1000.0
+        assert s.trigger("j1") is True and s.list_all()[0]["next_run"] == 0
+        assert s.trigger("khong-co") is False
+        assert s.delete("j1") is True and s.list_all() == []
+        assert s.delete("j1") is False  # xóa lần 2 → không còn
+    finally:
+        s.close()
+
+
 def test_compute_next_cron_unknown_timezone_falls_back_utc_not_crash(monkeypatch) -> None:
     import sys
     import types
