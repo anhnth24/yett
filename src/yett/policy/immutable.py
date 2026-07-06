@@ -6,6 +6,7 @@ chạm ghi vào vùng immutable (policy file, identity file). Subagent kế th�
 
 from __future__ import annotations
 
+import re
 import shlex
 from pathlib import Path
 
@@ -17,6 +18,10 @@ from yett.tools.db.sqlguard import classify_sql
 # [RT-5/RT-18] Dialect sqlglot được hỗ trợ — dùng khi Gate chưa biết driver thật của DB
 # profile (args ở lớp này là raw args từ model, chưa resolve qua db_query.py).
 _SQL_DIALECTS = ("postgres", "mysql", "tsql", "sqlite")
+
+# Tiền tố redirect ở đầu 1 token shlex: `>f`, `>>f`, `2>f`, `1>>f`, `<f` — tách ra để lấy
+# operand path thật (nếu không, `>policy.yaml` là 1 token, basename `>policy.yaml` không khớp).
+_REDIRECT_PREFIX = re.compile(r"^\d*[<>]+")
 
 _IMMUTABLE_WRITE = Decision(
     "deny", "HARDLINE: không được sửa policy/identity (immutable core)", "IMMUTABLE_WRITE",
@@ -100,7 +105,14 @@ class ImmutableCore:
         for i, tok in enumerate(tokens):
             if i == 0 or tok.startswith("-"):
                 continue  # tên lệnh + cờ không phải operand path
-            if _basename(tok) in self._protected_names:
+            operand = _REDIRECT_PREFIX.sub("", tok)  # [H1] bóc `>`/`2>>`/`<` dính đầu operand
+            if not operand:
+                continue
+            # [H1] So khớp MỌI thành phần path, không chỉ basename: bắt cả `>policy.yaml`
+            # (sau khi bóc redirect) LẪN con của thư mục protected (`/protdir/child.yaml` khi
+            # `protdir` được bảo vệ). Bỏ qua '.'/'..' — fail-closed, không phụ thuộc OS/cwd.
+            parts = [p for p in operand.replace("\\", "/").split("/") if p and p not in (".", "..")]
+            if any(p in self._protected_names for p in parts):
                 return True
         return False
 

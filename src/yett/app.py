@@ -21,8 +21,10 @@ from yett.obs.cost import compute_cost
 from yett.obs.spanstore import SpanStore
 from yett.provider.base import ChatResult, Provider
 from yett.provider.failover import FailoverRouter
+from yett.policy.immutable import ImmutableCore
 from yett.security.basic_gate import BasicGate
 from yett.security.filters import redact_attrs
+from yett.security.gate import Decision, PolicyGate, SessionCtx
 from yett.tools.builtin.codenav import GrepTool, ListDirTool, SearchTool
 from yett.tools.builtin.exec import ExecTool
 from yett.tools.builtin.files import ReadFileTool, WriteFileTool
@@ -54,7 +56,7 @@ def build_app(
     pricing = load_pricing(pricing_path) if pricing_path else {}
     return App(
         cfg, provider, state_dir=state_dir, pricing=pricing,
-        fallback=fallback, secrets=secrets,
+        fallback=fallback, secrets=secrets, config_path=config_path,
     )
 
 
@@ -98,6 +100,21 @@ def _cwd_mapper(backend: str, roots: dict[Path, str]) -> Callable[[Path], str]:
     return mapper
 
 
+class _ImmutableFirstGate:
+    """ImmutableCore hardline chạy TRƯỚC gate cấu hình — không allowlist/rule nào đảo được
+    (spec P3 §2.3: "immutable core cannot be overridden"). Giữ nguyên model allowlist/denylist
+    của BasicGate cho phần còn lại; chỉ thêm lớp hardline phía trước, KHÔNG thay backend gate."""
+
+    def __init__(self, immutable: ImmutableCore, inner: PolicyGate) -> None:
+        self._immutable = immutable
+        self._inner = inner
+
+    def evaluate(self, tool: str, args: dict, ctx: SessionCtx) -> Decision:
+        if hit := self._immutable.check(tool, args):
+            return hit
+        return self._inner.evaluate(tool, args, ctx)
+
+
 class App:
     def __init__(
         self,
@@ -111,6 +128,7 @@ class App:
         fetcher=None,
         secrets=None,
         clock: Callable[[], float] = time.time,
+        config_path: str | Path | None = None,
     ) -> None:
         self.cfg = cfg
         state_dir.mkdir(parents=True, exist_ok=True)
@@ -167,7 +185,18 @@ class App:
         if cfg.remote.hosts:
             self._wire_remote()
 
-        self.gate = BasicGate(cfg.security, hosts=self.host_registry)
+        # Immutable core hardline TRƯỚC gate cấu hình: cấm sửa policy/identity + hardline
+        # exec/ssh/db, không allowlist/rule nào đảo được. Protected = file config harness (chính
+        # sách của agent) khi biết đường dẫn; luôn phủ hardline lệnh/SQL kể cả khi rỗng.
+        protected: list[Path] = []
+        if config_path is not None:
+            try:
+                protected.append(Path(config_path).resolve())
+            except (OSError, ValueError):
+                pass
+        self.gate: PolicyGate = _ImmutableFirstGate(
+            ImmutableCore(protected), BasicGate(cfg.security, hosts=self.host_registry)
+        )
         # Hooks: rỗng mặc định (điểm cắm sẵn; nạp hook từ config sau).
         from yett.hooks.runner import HookRunner
         self.hooks = HookRunner([])

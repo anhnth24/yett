@@ -124,6 +124,26 @@ def test_immutable_protects_policy_file_via_exec_relative_path(tmp_path: Path) -
     assert dec3.verdict == "allow"
 
 
+def test_immutable_exec_hits_protected_strips_redirect_operators() -> None:
+    # [H1] redirect dính operand (`>policy.yaml`, `>>policy.yaml`, `2>policy.yaml`) trước đây
+    # lọt vì shlex giữ `>policy.yaml` là 1 token, basename '>policy.yaml' không khớp. Test lớp
+    # _exec_hits_protected trực tiếp (check() còn bắt redirect qua DELETE_FILE hardline nữa).
+    core = ImmutableCore([Path("policy.yaml")])
+    for cmd in ("echo x >policy.yaml", "echo x >>policy.yaml", "echo x 2>policy.yaml"):
+        assert core._exec_hits_protected(cmd) is True, cmd
+    assert core._exec_hits_protected("echo x >other.txt") is False
+
+
+def test_immutable_exec_hits_protected_matches_child_of_protected_dir() -> None:
+    # [H1] ghi vào CON của thư mục protected qua path tuyệt đối — basename-only cũ bỏ sót
+    # (basename 'child.yaml' ≠ tên dir 'protdir'); nay so khớp mọi thành phần path (POSIX).
+    core = ImmutableCore([Path("/srv/protdir")])  # .name == 'protdir'
+    assert core._exec_hits_protected("sed -i /srv/protdir/child.yaml") is True
+    assert core._exec_hits_protected("cat /srv/protdir/nested/deep.yaml") is True
+    # path ngoài protected có basename khác → không false-deny
+    assert core._exec_hits_protected("sed -i /tmp/child.yaml") is False
+
+
 def test_immutable_write_file_uses_canonical_path_not_substring(tmp_path: Path) -> None:
     # [RT-4] write_file dùng resolve() + is_relative_to — path CHỨA tên file protected như
     # substring (vd file khác tên tương tự) KHÔNG bị chặn nhầm; chỉ path THẬT trỏ vào/dưới
@@ -135,6 +155,37 @@ def test_immutable_write_file_uses_canonical_path_not_substring(tmp_path: Path) 
     eng = _engine(rules, protected=[policy_file])
     ok = safe_evaluate(eng, "write_file", {"path": str(decoy), "content": "x"}, _Ctx())
     assert ok.verdict == "allow"
+
+
+def test_app_wires_immutable_core_into_running_gate(tmp_path: Path) -> None:
+    """[M2] Bất biến "immutable core không override được" phải sống ở gate THẬT của App —
+    không chỉ trong PolicyEngine dựng tay ở test. App trước đây wire BasicGate trần nên
+    exec/write_file chạm file config lọt qua. Kiểm qua chính `app.gate.evaluate`."""
+    from yett.app import App, _ImmutableFirstGate
+    from yett.config.models import HarnessCfg, ProviderCfg, SandboxCfg
+    from yett.provider.fake import FakeProvider
+    from yett.secrets.backends import InMemorySecretStore
+
+    cfg_file = tmp_path / "harness.yaml"
+    cfg_file.write_text("provider: {}\n", encoding="utf-8")
+    cfg = HarnessCfg(
+        provider=ProviderCfg(name="fake", model="fake-1"),
+        workspace_root=tmp_path / "ws",
+        sandbox=SandboxCfg(backend="local"),
+    )
+    (tmp_path / "ws").mkdir()
+    app = App(provider=FakeProvider([]), cfg=cfg, state_dir=tmp_path / "st",
+              secrets=InMemorySecretStore(), config_path=cfg_file)
+    try:
+        assert isinstance(app.gate, _ImmutableFirstGate)
+        # exec `sed -i harness.yaml` (sửa chính file config của agent) → hardline deny
+        dec = app.gate.evaluate("exec", {"cmd": f"sed -i {cfg_file.name}"}, _Ctx())
+        assert dec.verdict == "deny" and dec.rule_id == "IMMUTABLE_WRITE"
+        # write_file vào file config → hardline deny (dù không rule allow nào)
+        dec2 = app.gate.evaluate("write_file", {"path": str(cfg_file), "content": "x"}, _Ctx())
+        assert dec2.verdict == "deny" and dec2.rule_id == "IMMUTABLE_WRITE"
+    finally:
+        app.close()
 
 
 # --- RG3-4: audit hash chain ---
