@@ -73,7 +73,7 @@ def non_loopback_warning(host: str) -> str | None:
 
 
 def _cmd_serve(args) -> int:
-    from yett.app import build_app
+    from yett.app import App, build_app
     from yett.config.loader import load_config
     from yett.errors import YettError
     from yett.secrets.resolve import build_secret_store
@@ -86,13 +86,18 @@ def _cmd_serve(args) -> int:
     if warning:
         print(warning, file=sys.stderr)
     pricing = args.pricing if Path(args.pricing).exists() else None
+    def rebuild() -> App:
+        # Hot-reload: đọc lại config vừa lưu + dựng App mới (server swap dưới chat_lock).
+        secrets2 = build_secret_store(load_config(args.config).secret_backend)
+        return build_app(args.config, secrets2, state_dir=Path(args.state), pricing_path=pricing)
+
     try:
-        secrets = build_secret_store(load_config(args.config).secret_backend)
-        app = build_app(args.config, secrets, state_dir=Path(args.state), pricing_path=pricing)
+        app = rebuild()
     except YettError as e:
         print(f"[yett] lỗi khởi động: {e}", file=sys.stderr)
         return 1
-    serve_forever(app, host=args.host, port=args.port, open_browser=args.open, config_path=args.config)
+    serve_forever(app, host=args.host, port=args.port, open_browser=args.open,
+                  config_path=args.config, rebuild=rebuild)
     return 0
 
 
@@ -177,6 +182,13 @@ def _cmd_usage(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # UTF-8 cho stdout/stderr: tránh crash 'charmap'/cp1252 khi in tiếng Việt trên Windows
+    # (console codepage hoặc khi redirect ra file). Không tác dụng phụ trên Linux/Docker (đã UTF-8).
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError):
+            pass
     args = build_parser().parse_args(argv)
     if not args.command:
         build_parser().print_help()

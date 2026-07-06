@@ -41,6 +41,10 @@ class RouterCfg(BaseModel):
 
 class ProjectCfg(BaseModel):
     path: Path
+    # Map tài nguyên cho project (tên tham chiếu remote.hosts / databases). Dùng để inject
+    # bối cảnh khi chat theo project → LLM biết project này dùng host/db nào. Rỗng = không ràng.
+    hosts: list[str] = Field(default_factory=list)
+    databases: list[str] = Field(default_factory=list)
 
 
 class EgressCfg(BaseModel):

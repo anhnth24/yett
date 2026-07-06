@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from yett.obs import cost
 from yett.web.page import INDEX_HTML
@@ -35,9 +36,11 @@ _MAX_BODY_BYTES = 2 * 1024 * 1024  # 2MB — đủ cho message chat + config tex
 
 def make_handler(
     app: "App", center=None, config_path: str | None = None, *,
-    bind_host: str = "127.0.0.1",
+    bind_host: str = "127.0.0.1", chat_lock=None, rebuild=None,
 ) -> type[BaseHTTPRequestHandler]:
-    chat_lock = threading.Lock()  # serialize turn (single-user local)
+    # serialize turn (single-user local). Chia sẻ với scheduler tick nếu được truyền vào.
+    chat_lock = chat_lock or threading.Lock()
+    initial_app = app  # fallback nếu server chưa gắn _app; hot-reload đọc self.server._app
 
     # Bind loopback -> allowlist Host/Origin cố định (127.0.0.1/localhost/::1 + đúng
     # port). Bind ra ngoài loopback (LAN/0.0.0.0) là lựa chọn tường minh của người vận
@@ -137,18 +140,22 @@ def make_handler(
             if not self._host_origin_ok():
                 self._json(403, {"error": "Host/Origin không hợp lệ"})
                 return
+            app = getattr(self.server, "_app", None) or initial_app  # hot-reload: app hiện tại
             if self.path == "/" or self.path.startswith("/index"):
                 self._send(200, INDEX_HTML.encode("utf-8"), "text/html")
             elif self.path == "/api/health":
                 self._json(200, {"ok": True, "provider": app.cfg.provider.name,
                                  "model": app.cfg.provider.model})
             elif self.path.startswith("/api/usage"):
-                spans = []
+                spans: list[dict] = []
                 for t in app.spanstore.list_traces(limit=1000):
                     spans.extend(app.spanstore.get_trace(t["trace_id"]))
                 self._json(200, {"rows": cost.aggregate(spans, by="provider")})
             elif self.path.startswith("/api/traces"):
                 self._json(200, {"traces": app.spanstore.list_traces(limit=50)})
+            elif self.path.startswith("/api/trace?"):
+                tid = (parse_qs(urlparse(self.path).query).get("id") or [""])[0]
+                self._json(200, {"spans": app.spanstore.get_trace(tid) if tid else []})
             elif self.path == "/api/pending":
                 self._json(200, {"pending": center.list_pending() if center else []})
             elif self.path == "/api/config":
@@ -157,6 +164,20 @@ def make_handler(
                 # [RT] GET không bao giờ trả secret plaintext — dùng chung filter Phase 5.
                 text = read_config_text_redacted(config_path) if config_path else ""
                 self._json(200, {"text": text, "path": config_path or ""})
+            elif self.path == "/api/meta":
+                from yett.web.consoledata import overview
+                self._json(200, overview(app))
+            elif self.path == "/api/secrets":
+                from yett.web.consoledata import secrets_status
+                self._json(200, {"secrets": secrets_status(app)})
+            elif self.path == "/api/subagents":
+                from yett.web.consoledata import subagents
+                self._json(200, {"subagents": subagents(app)})
+            elif self.path == "/api/projects":
+                from yett.web.consoledata import projects
+                self._json(200, projects(app))
+            elif self.path == "/api/jobs":
+                self._json(200, {"jobs": app.cron.list_all()})
             else:
                 self._json(404, {"error": "not found"})
 
@@ -169,6 +190,7 @@ def make_handler(
                 self._drain_declared_body()
                 self._json(403, {"error": "Host/Origin không hợp lệ"})
                 return
+            app = getattr(self.server, "_app", None) or initial_app  # hot-reload: app hiện tại
             body = self._read_body()
             if body is None:
                 return
@@ -195,8 +217,51 @@ def make_handler(
                 err = write_config_text(config_path, data.get("text", ""))
                 if err:
                     self._json(400, {"error": err})
-                else:
-                    self._json(200, {"ok": True, "note": "Đã lưu. Khởi động lại yett để áp dụng."})
+                    return
+                note = "Đã lưu. Khởi động lại yett để áp dụng."
+                if rebuild is not None:
+                    # Hot-reload: dựng App mới từ config vừa lưu, swap dưới chat_lock (không
+                    # race với chat/scheduler), rồi đóng App cũ. Lỗi build → file đã lưu, báo rõ.
+                    try:
+                        _hot_swap(self.server, chat_lock, center, rebuild)
+                        # Cập nhật mtime đã-biết để watcher không rebuild lại lần nữa cho chính
+                        # lần ghi này (chỉ external edit mới kích watcher).
+                        try:
+                            self.server._cfg_mtime = os.path.getmtime(config_path)  # type: ignore[attr-defined]
+                        except OSError:
+                            pass
+                        note = "Đã lưu & áp dụng ngay (không cần khởi động lại)."
+                    except Exception as e:  # noqa: BLE001
+                        note = f"Đã lưu, nhưng áp dụng nóng lỗi ({e}) — khởi động lại để chắc."
+                self._json(200, {"ok": True, "note": note})
+                return
+
+            if self.path == "/api/cancel":
+                self._json(200, {"ok": app.cancel(data.get("session", "main"))})
+                return
+
+            if self.path == "/api/jobs":  # tạo job cron
+                import time as _t
+                from yett.sched.cron import CronJob, initial_next_run
+                jid = (data.get("id") or "").strip()
+                spec = (data.get("spec") or "").strip()
+                prompt = (data.get("prompt") or "").strip()
+                if not (jid and spec and prompt):
+                    self._json(400, {"error": "cần id, spec, prompt"})
+                    return
+                nxt = initial_next_run(spec, _t.time(), app.cfg.timezone)
+                if nxt is None:
+                    self._json(400, {"error": "spec không hợp lệ hoặc đã qua (dùng at:/every:/cron:)"})
+                    return
+                app.cron.add(CronJob(id=jid, spec=spec, tz=app.cfg.timezone, prompt=prompt,
+                                     session_key=data.get("session", "main")), next_run=nxt)
+                self._json(200, {"ok": True, "note": "Đã thêm job."})
+                return
+            if self.path == "/api/jobs/run":
+                self._json(200, {"ok": app.cron.trigger(data.get("id", ""))})
+                return
+            if self.path == "/api/jobs/delete":
+                self._json(200, {"ok": app.cron.delete(data.get("id", ""))})
                 return
 
             if self.path != "/api/chat":
@@ -207,11 +272,15 @@ def make_handler(
                 self._json(400, {"error": "thiếu message"})
                 return
             session = data.get("session", "main")
+            turn_id = data.get("turn_id") or None
+            project = data.get("project") or None
             try:
                 with chat_lock:
-                    res = asyncio.run(app.chat(msg, session_key=session))
+                    res = asyncio.run(app.chat(msg, session_key=session, turn_id=turn_id,
+                                               project=project))
                 self._json(200, {"text": res.text, "status": res.status,
-                                 "iterations": res.iterations, "trace_id": res.trace_id})
+                                 "iterations": res.iterations, "trace_id": res.trace_id,
+                                 "turn_id": turn_id})
             except Exception as e:  # noqa: BLE001
                 self._json(500, {"error": str(e)})
 
@@ -219,35 +288,110 @@ def make_handler(
 
 
 def serve(app: "App", *, host: str = "127.0.0.1", port: int = 8765, center=None,
-          config_path: str | None = None) -> ThreadingHTTPServer:
-    """Tạo server. Nếu truyền ApprovalCenter → gắn approver để UI duyệt lệnh nhạy cảm."""
+          config_path: str | None = None, chat_lock=None, rebuild=None) -> ThreadingHTTPServer:
+    """Tạo server. Nếu truyền ApprovalCenter → gắn approver để UI duyệt lệnh nhạy cảm.
+    chat_lock chia sẻ với scheduler tick. rebuild: callable dựng App mới (hot-reload config)."""
     if center is not None:
         app.set_approver(center.request)
+    lock = chat_lock or threading.Lock()
     httpd = ThreadingHTTPServer(
-        (host, port), make_handler(app, center, config_path, bind_host=host)
+        (host, port),
+        make_handler(app, center, config_path, bind_host=host, chat_lock=lock, rebuild=rebuild),
     )
+    httpd._chat_lock = lock  # type: ignore[attr-defined]  # để serve_forever dùng cho ticker
+    httpd._app = app  # type: ignore[attr-defined]  # App hiện tại; hot-reload swap tại đây
+    try:
+        httpd._cfg_mtime = os.path.getmtime(config_path) if config_path else None  # type: ignore[attr-defined]
+    except OSError:
+        httpd._cfg_mtime = None  # type: ignore[attr-defined]
     return httpd
+
+
+def _run_scheduler(httpd, chat_lock, stop) -> None:
+    """Thread nền: mỗi 3s chạy job cron tới hạn. Đọc App HIỆN TẠI từ httpd._app (có thể đã
+    hot-reload) và giữ chat_lock suốt tick → serialize với chat + an toàn khi rebuild swap App."""
+    import time as _t
+
+    from yett.sched.cron import compute_next
+
+    while not stop.wait(3.0):  # wait trả True khi stop set → thoát vòng
+        with chat_lock:
+            app = getattr(httpd, "_app", None)
+            if app is None:
+                continue
+            try:
+                due = app.cron.due(_t.time())
+            except Exception:  # noqa: BLE001 — lỗi store 1 tick không được giết thread
+                continue
+            for job in due:
+                if not app.cron.mark_running(job.id):
+                    continue  # overlap → skip
+                try:
+                    asyncio.run(app.chat(job.prompt, session_key=job.session_key))
+                except Exception:  # noqa: BLE001 — job lỗi vẫn phải finish để không kẹt running
+                    pass
+                app.cron.finish(job.id, now=_t.time(),
+                                next_run=compute_next(job.spec, _t.time(), job.tz))
+
+
+def _hot_swap(httpd, chat_lock, center, rebuild) -> None:
+    """Dựng App mới rồi swap httpd._app dưới chat_lock (không race chat/scheduler), đóng App cũ."""
+    with chat_lock:
+        new_app = rebuild()
+        old = getattr(httpd, "_app", None)
+        httpd._app = new_app
+        if center is not None:
+            new_app.set_approver(center.request)
+        if old is not None:
+            old.close()
+
+
+def _watch_config(httpd, chat_lock, center, rebuild, config_path, stop) -> None:
+    """Theo dõi mtime file config; operator sửa file mount (kể cả mount :ro từ host — :ro chỉ
+    chặn CONTAINER ghi, vẫn đọc được thay đổi từ host) → hot-reload live, không cần restart,
+    agent/web vẫn không ghi được config. Bỏ qua lần web tự lưu (đã cập nhật _cfg_mtime)."""
+    while not stop.wait(3.0):
+        try:
+            m = os.path.getmtime(config_path)
+        except OSError:
+            continue
+        if m != getattr(httpd, "_cfg_mtime", m):
+            httpd._cfg_mtime = m
+            try:
+                _hot_swap(httpd, chat_lock, center, rebuild)
+            except Exception:  # noqa: BLE001 — config sửa lỗi 1 lần không được giết watcher
+                pass
 
 
 def serve_forever(
     app: "App", *, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = False,
-    config_path: str | None = None,
+    config_path: str | None = None, rebuild=None,
 ) -> None:
     from yett.approvals import ApprovalCenter
 
     center = ApprovalCenter(default_timeout=float(app.cfg.security.approval_timeout_sec))
-    httpd = serve(app, host=host, port=port, center=center, config_path=config_path)
+    httpd = serve(app, host=host, port=port, center=center, config_path=config_path,
+                  rebuild=rebuild)
     url = f"http://{host}:{port}"
     print(f"[yett] Web UI: {url}  (Ctrl+C để dừng)")
     if open_browser:
-        import threading
         import webbrowser
-
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+    stop = threading.Event()
+    lock = httpd._chat_lock  # type: ignore[attr-defined]
+    sched = threading.Thread(target=_run_scheduler, args=(httpd, lock, stop), daemon=True)
+    sched.start()
+    if config_path and rebuild is not None:
+        # Watcher: sửa file config (trên host, kể cả mount :ro) → hot-reload live trong prod.
+        threading.Thread(
+            target=_watch_config, args=(httpd, lock, center, rebuild, config_path, stop),
+            daemon=True,
+        ).start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\n[yett] đã dừng.")
     finally:
+        stop.set()
         httpd.shutdown()
-        app.close()
+        getattr(httpd, "_app", app).close()  # đóng App hiện tại (có thể đã hot-reload swap)

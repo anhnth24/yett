@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
 
 from yett.config.models import HarnessCfg
+
+# Phải khớp replacement trong yett.security.filters (mọi pattern redact về cùng chuỗi này).
+_REDACT_MARKER = "[REDACTED]"
+_KV_RE = re.compile(r"^(\s*)([A-Za-z0-9_.-]+):[ \t]*(.*?)\s*$")
 
 
 def read_config_text(path: str | Path) -> str:
@@ -19,15 +24,42 @@ def read_config_text_redacted(path: str | Path) -> str:
     — `yett.security.filters.redact`, KHÔNG tự viết lại pattern, tránh lặp lỗ hổng cũ
     như miss format `sk-cp-`).
 
-    LƯU Ý (trade-off có chủ đích): endpoint lưu (`write_config_text`) KHÔNG merge lại
-    giá trị gốc — nếu người dùng bấm Lưu mà không sửa dòng đã bị che, giá trị secret
-    thật trên đĩa sẽ bị ghi đè bằng chuỗi `[REDACTED]` literal. Khuyến nghị (UI đã nhắc
-    ở tab Cấu hình): giữ secret trong `secrets/` hoặc biến môi trường, không sửa secret
-    trực tiếp qua tab này.
+    Khi lưu (`write_config_text`) sẽ merge lại giá trị gốc cho dòng còn chứa marker
+    `[REDACTED]` (khớp theo thụt-lề + key), nên bấm Lưu mà không sửa dòng bị che sẽ
+    KHÔNG ghi đè secret thật. Khuyến nghị vẫn là giữ secret ở `secrets/` hoặc env.
     """
     from yett.security.filters import redact
 
     return redact(read_config_text(path))
+
+
+def _restore_redacted_secrets(original_text: str, submitted_text: str) -> str:
+    """Khôi phục secret bị che trước khi lưu: dòng `key: ...` nào trong bản gửi lên còn
+    chứa marker redact thì lấy lại value nguyên văn từ file gốc trên đĩa (khớp theo
+    thụt-lề + key). Giữ nguyên comment/format bản gửi lên; chỉ đụng dòng có marker.
+
+    Chỉ khớp value cả-dòng == một cặp `key: value`. Trùng (indent, key) ở nhiều block
+    thì lấy dòng gốc đầu tiên — đủ cho ca thực tế (chỉ block provider active không bị
+    comment). Người dùng muốn ĐỔI secret vẫn gõ giá trị mới (không còn marker) như thường.
+    """
+    if _REDACT_MARKER not in submitted_text:
+        return submitted_text
+    original_vals: dict[tuple[str, str], str] = {}
+    for line in original_text.splitlines():
+        m = _KV_RE.match(line)
+        if m and _REDACT_MARKER not in m.group(3):
+            original_vals.setdefault((m.group(1), m.group(2)), m.group(3))
+    out: list[str] = []
+    for line in submitted_text.splitlines():
+        m = _KV_RE.match(line)
+        if m and _REDACT_MARKER in m.group(3):
+            orig = original_vals.get((m.group(1), m.group(2)))
+            if orig is not None:
+                out.append(f"{m.group(1)}{m.group(2)}: {orig}")
+                continue
+        out.append(line)
+    joined = "\n".join(out)
+    return joined + "\n" if submitted_text.endswith("\n") else joined
 
 
 def validate_config_text(text: str) -> str | None:
@@ -44,11 +76,19 @@ def validate_config_text(text: str) -> str | None:
 
 
 def write_config_text(path: str | Path, text: str) -> str | None:
-    """Validate rồi ghi. Trả None nếu ok, hoặc thông báo lỗi (không ghi)."""
-    err = validate_config_text(text)
+    """Merge lại secret bị che, validate, rồi ghi. Trả None nếu ok, hoặc thông báo lỗi
+    (không ghi). Merge secret TRƯỚC validate để `[REDACTED]` (parse thành YAML list) không
+    làm pydantic fail và không ghi đè secret thật trên đĩa."""
+    merged = _restore_redacted_secrets(read_config_text(path), text)
+    err = validate_config_text(merged)
     if err is not None:
         return err
     p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(text, encoding="utf-8")
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(merged, encoding="utf-8")
+    except OSError as e:
+        # Prod Docker mount config read-only (:ro) → không ghi được. Báo rõ thay vì 500.
+        return (f"Không ghi được config ({e.strerror or e}). Nếu chạy Docker, config đang mount "
+                "read-only — sửa mount thành đọc-ghi hoặc chỉnh file trên host.")
     return None

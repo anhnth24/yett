@@ -10,7 +10,9 @@ from pathlib import Path, PurePosixPath
 from typing import Callable
 
 from yett.config.models import HarnessCfg
+from yett.core.cancel import CancelToken
 from yett.core.checkpoint import CheckpointStore
+from yett.sched.cron import CronStore
 from yett.core.complexity import ComplexityRouter
 from yett.core.context import assemble_context
 from yett.core.loop import AgentLoop, LoopConfig, TurnResult
@@ -137,6 +139,7 @@ class App:
 
         self.spanstore = SpanStore(state_dir / "traces.db", redactor=redact_attrs)
         self.checkpoints = CheckpointStore(state_dir / "scheduler.db")
+        self.cron = CronStore(state_dir / "cron.db")
         self.sessions = SessionStore(state_dir / "sessions.db")
         self.scope = ProjectScope(cfg.workspace_root, {n: p.path for n, p in cfg.projects.items()})
         self.workspace = WorkspaceMemory(cfg.workspace_root)
@@ -170,6 +173,8 @@ class App:
         if fetcher is not None:
             self.registry.register(WebFetchTool(cfg.egress.allowlist, fetcher))
 
+        # Token hủy theo session (web POST /api/cancel → set cờ; loop check ở ranh giới stage).
+        self._cancel_tokens: dict[str, CancelToken] = {}
         # --- Nhóm 2 wired vào App ---
         self._secrets = secrets
         self.skill_loader: SkillLoader | None = None
@@ -319,7 +324,8 @@ class App:
                      "trừ khi được duyệt tường minh. Khi bị chặn, giải thích và đề xuất cách an toàn.")
         return "\n".join(lines)
 
-    async def chat(self, message: str, *, session_key: str = "main", turn_id: str | None = None) -> TurnResult:
+    async def chat(self, message: str, *, session_key: str = "main", turn_id: str | None = None,
+                   project: str | None = None) -> TurnResult:
         system = self.workspace.build_system_prompt(
             self.capabilities_summary(), token_budget=self.cfg.budget.context_token_budget // 2
         )
@@ -327,19 +333,46 @@ class App:
         history = self.sessions.history(
             session_key, token_budget=self.cfg.budget.context_token_budget // 4
         )
-        ctx = assemble_context(system, message, history=history)
+        # Bối cảnh project (nếu chọn): báo agent làm việc ở project nào + path thật.
+        # File tool đã có scope tới path này; đây là inject bối cảnh, không phải sandbox riêng.
+        user_msg = message
+        if project and project in self.cfg.projects:
+            pc = self.cfg.projects[project]
+            parts = [f"project '{project}' tại {pc.path}"]
+            if pc.hosts:
+                parts.append(f"server SSH: {', '.join(pc.hosts)}")
+            if pc.databases:
+                parts.append(f"database: {', '.join(pc.databases)}")
+            user_msg = f"[Bối cảnh: làm việc trong {'; '.join(parts)}]\n\n{message}"
+        ctx = assemble_context(system, user_msg, history=history)
         tid = turn_id or f"turn-{int(self._clock()*1000)}"
         # Complexity router: câu dễ → ít vòng lặp (tiết kiệm chi phí); câu khó → nhiều vòng.
         max_iter = self.complexity.classify(message).max_iterations if self.cfg.router.enabled else None
         # session_ctx mang allowed_tools = tất cả (cho phép delegate ở cấp cha)
         parent = _MainCtx(session_key, set(self.registry.names()))
-        res = await self.loop.run_turn(
-            ctx, session_key=session_key, turn_id=tid, session_ctx=parent, max_iterations=max_iter
-        )
+        # Token hủy: đăng ký theo session để /api/cancel (thread khác) gọi được giữa turn.
+        token = CancelToken()
+        self._cancel_tokens[session_key] = token
+        try:
+            res = await self.loop.run_turn(
+                ctx, session_key=session_key, turn_id=tid, cancel=token,
+                session_ctx=parent, max_iterations=max_iter,
+            )
+        finally:
+            self._cancel_tokens.pop(session_key, None)
         # Ghi lượt vào lịch sử (chỉ khi turn xong bình thường, có nội dung trả lời).
         if res.status == "done" and res.text:
             self.sessions.record_turn(session_key, message, res.text, ts=self._clock())
         return res
+
+    def cancel(self, session_key: str = "main") -> bool:
+        """Hủy turn đang chạy của session (nếu có). Loop sẽ dừng sạch ở ranh giới stage,
+        checkpoint status='canceled' → resume được. True nếu có turn để hủy."""
+        token = self._cancel_tokens.get(session_key)
+        if token is None:
+            return False
+        token.cancel()
+        return True
 
     def set_approver(self, approver) -> None:
         """Gắn approver (vd web ApprovalCenter.request) — turn sẽ hỏi duyệt khi Gate cần."""
@@ -348,6 +381,7 @@ class App:
     def close(self) -> None:
         self.spanstore.close()
         self.checkpoints.close()
+        self.cron.close()
         self.sessions.close()
 
 
