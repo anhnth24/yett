@@ -31,8 +31,10 @@ def _post(url: str, obj: dict) -> dict:
 
 def _run_with_decision(tmp_path: Path, port: int, approve: bool) -> dict:
     (tmp_path / "ws").mkdir()
+    # Pattern fullmatch (allowlist anchoring): "echo.*" khớp cả câu lệnh, không phải prefix
+    # kiểu re.search cũ ("^echo" sẽ KHÔNG fullmatch "echo hi").
     sec = SecurityCfg(allowlist=[
-        ToolRule(tool="exec", arg_patterns={"cmd": "^echo"}, effect="need_approval")
+        ToolRule(tool="exec", arg_patterns={"cmd": "echo.*"}, effect="need_approval")
     ])
     cfg = HarnessCfg(
         provider=ProviderCfg(name="fake", model="fake-1"), workspace_root=tmp_path / "ws",

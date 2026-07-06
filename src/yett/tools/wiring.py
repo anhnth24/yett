@@ -95,26 +95,27 @@ async def execute_tool(
         pre = await hooks.run(HookEvent("PreToolUse", name, args))
         if pre.action == "deny":
             return ToolResult.error(f"[DENIED] hook: {pre.reason}")
+
+        # [P1-11] Hook chạy SAU Gate và có quyền mutate args — verdict `dec` (và approval đã
+        # cấp cho args gốc) chỉ còn đáng tin khi args KHÔNG đổi. Nếu hook MUTATE args (vd đổi
+        # `echo safe` → `rm -rf /`) thì phải re-gate trên args mới, xử lý verdict lần 2 ĐẦY ĐỦ:
+        # deny → chặn ngay; need_approval → hỏi duyệt LẠI với args mới (KHÔNG tái dùng `approved`
+        # ở trên — approval đó cấp cho args gốc); approver vắng → deny fail-closed.
+        # Hook KHÔNG mutate (kể cả HookRunner rỗng) → giữ nguyên quyết định gốc, KHÔNG hỏi duyệt
+        # lần hai (nếu re-gate vô điều kiện, tool need_approval sẽ bị hỏi duyệt 2 lần).
         if pre.mutated_args is not None:
             args = pre.mutated_args
-
-        # [P1-11] Hook chạy SAU Gate và có quyền mutate args — verdict `dec` ở trên được tính
-        # trên args CŨ, không còn đáng tin cho args MỚI (vd hook đổi `echo safe` → `rm -rf /`,
-        # tool sẽ chạy đúng args mới nếu không re-gate). Re-run Gate với args sau hook, xử lý
-        # verdict lần 2 ĐẦY ĐỦ: deny → chặn ngay; need_approval → hỏi duyệt LẠI với args mới
-        # (KHÔNG tái sử dụng biến `approved` ở trên — approval đó cấp cho args gốc, không phải
-        # args đã bị hook đổi); approver vắng → deny fail-closed.
-        redec = safe_evaluate(gate, name, _gate_args(name, args, registry), ctx)
-        if auditor:
-            auditor(kind="gate", tool=name, verdict=redec.verdict, rule_id=redec.rule_id, phase="post_hook")
-        if redec.verdict == "deny":
-            return ToolResult.error(f"[DENIED] {redec.reason}")
-        if redec.verdict == "need_approval":
-            reapproved = await approver(name, args) if approver else False
+            redec = safe_evaluate(gate, name, _gate_args(name, args, registry), ctx)
             if auditor:
-                auditor(kind="approval", tool=name, approved=reapproved, phase="post_hook")
-            if not reapproved:
-                return ToolResult.error("[DENIED] approval bị từ chối hoặc hết hạn")
+                auditor(kind="gate", tool=name, verdict=redec.verdict, rule_id=redec.rule_id, phase="post_hook")
+            if redec.verdict == "deny":
+                return ToolResult.error(f"[DENIED] {redec.reason}")
+            if redec.verdict == "need_approval":
+                reapproved = await approver(name, args) if approver else False
+                if auditor:
+                    auditor(kind="approval", tool=name, approved=reapproved, phase="post_hook")
+                if not reapproved:
+                    return ToolResult.error("[DENIED] approval bị từ chối hoặc hết hạn")
 
     tool = registry.get(name)
     try:

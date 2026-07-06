@@ -42,9 +42,16 @@ class HookRunner:
         self._log = logger or (lambda **k: None)
 
     async def run(self, event: HookEvent) -> HookOutcome:
-        """Chạy các hook đăng ký event này theo thứ tự. deny dừng ngay; mutate tích luỹ."""
+        """Chạy các hook đăng ký event này theo thứ tự. deny dừng ngay; mutate tích luỹ.
+
+        Chỉ trả action="mutate" khi CÓ hook thực sự đổi args/result — nếu không (kể cả khi
+        danh sách hook rỗng) trả "continue" với mutated_*=None. Caller (wiring) dựa vào
+        `mutated_args is not None` để quyết định re-gate/re-approve: nếu ở đây luôn trả args
+        (dù không đổi), tool cần duyệt sẽ bị hỏi duyệt HAI lần."""
         args = dict(event.args)
         result = event.result_content
+        args_mutated = False
+        result_mutated = False
         for hook in self._hooks:
             if event.name not in hook.events:
                 continue
@@ -61,6 +68,14 @@ class HookRunner:
             if outcome.action == "mutate":
                 if outcome.mutated_args is not None:
                     args = outcome.mutated_args
+                    args_mutated = True
                 if outcome.mutated_result is not None:
                     result = outcome.mutated_result
-        return HookOutcome("mutate", mutated_args=args, mutated_result=result)
+                    result_mutated = True
+        if not args_mutated and not result_mutated:
+            return HookOutcome("continue")
+        return HookOutcome(
+            "mutate",
+            mutated_args=args if args_mutated else None,
+            mutated_result=result if result_mutated else None,
+        )
