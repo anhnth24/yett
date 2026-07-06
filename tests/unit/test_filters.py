@@ -133,3 +133,17 @@ def test_redact_attrs_recursive_nested_dict_and_list() -> None:
     assert "Bearer abcdefghijklmnopqrstuvwx12345" not in str(out)
     assert out["meta"]["keys"][1] == "plain-value"
     assert "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789" not in out["meta"]["keys"][0]
+
+
+def test_redact_odbc_password_quoted_and_braced() -> None:
+    """[M4] Giá trị Pwd có quote/braces (ODBC cho phép ';' bên trong) phải redact TRỌN,
+    không chỉ tới dấu ';' đầu tiên (bare-value pattern cũ để lọt phần sau)."""
+    for dsn, secret in (
+        ("Driver=x;Pwd='se;cret';Server=y", "se;cret"),
+        ('Driver=x;Password="p@ss;word";Server=y', "p@ss;word"),
+        ("Driver=x;Pwd={br@ce;val};Server=y", "br@ce;val"),
+        ("Driver=x;Pwd=barePwd;Server=y", "barePwd"),
+    ):
+        out = filters.redact(dsn)
+        assert secret not in out, dsn
+        assert "[REDACTED]" in out

@@ -21,8 +21,14 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
     ("generic_sk_key", re.compile(r"\bsk-[A-Za-z0-9-]{20,}\b"), "[REDACTED]"),
     ("bearer", re.compile(r"(?i)bearer\s+[A-Za-z0-9\-._~+/]{20,}"), "[REDACTED]"),
     ("pw_in_dsn", re.compile(r"(?i)(://[^:/@\s]+:)[^@/\s]+(@)"), r"\1[REDACTED]\2"),
-    # ODBC/ADO DSN: `Pwd=...;` hoặc `Password=...;` — giữ tên key, redact giá trị.
-    ("odbc_dsn_pwd", re.compile(r"(?i)\b(pwd|password)\s*=\s*[^;'\"\s]+"), r"\1=[REDACTED]"),
+    # ODBC/ADO DSN: `Pwd=...;` / `Password=...;` — giữ tên key, redact giá trị. Giá trị có thể
+    # là bare (dừng ở ';'), quote đơn/kép, hoặc bọc `{...}` (ODBC cho phép ký tự đặc biệt kể cả
+    # ';' bên trong) — nếu chỉ khớp bare thì `Pwd='se;cret'`/`Pwd={p@ss;word}` lọt một phần.
+    (
+        "odbc_dsn_pwd",
+        re.compile(r"(?i)\b(pwd|password)\s*=\s*('[^']*'|\"[^\"]*\"|\{[^}]*\}|[^;'\"\s]+)"),
+        r"\1=[REDACTED]",
+    ),
 ]
 
 # [P0-5][RT-15] Private key PEM block: redact TOÀN KHỐI, không chỉ header.

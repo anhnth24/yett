@@ -108,3 +108,13 @@ def test_sqlserver_driver_alias_mapped_to_sqlglot_tsql() -> None:
     # dialect. classify_sql phải tự map alias để câu SELECT hợp lệ trên SQL Server vẫn pass.
     dec = classify_sql("SELECT TOP 10 * FROM orders", "sqlserver")
     assert dec.verdict == "allow", dec.reason
+
+
+def test_explain_without_space_does_not_recurse() -> None:
+    # [L2] `EXPLAIN(SELECT 1)` (không space) trước đây làm regex strip `explain\s+` không bóc
+    # được → inner==norm → đệ quy vô hạn (RecursionError + ~980 lần parse/log-flood). Nay luôn
+    # trả Decision (không đệ quy); dạng lạ này fail-closed deny là chấp nhận được.
+    dec = classify_sql("EXPLAIN(SELECT 1)", "postgres")
+    assert dec.verdict in {"allow", "deny"}  # điểm mấu chốt: KHÔNG RecursionError
+    # dạng EXPLAIN thường (có space) vẫn phân loại đúng phần bên trong → allow (không regress).
+    assert classify_sql("EXPLAIN SELECT 1", "postgres").verdict == "allow"

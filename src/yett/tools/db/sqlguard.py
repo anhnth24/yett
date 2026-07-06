@@ -88,7 +88,12 @@ def classify_sql(sql: str, dialect: str = "postgres") -> Decision:
         word = (stmt.this or "").upper() if isinstance(stmt.this, str) else ""
         if word in {"EXPLAIN"}:
             # EXPLAIN ANALYZE thực thi câu bên trong → phân loại lại phần bên trong (fail-closed).
-            inner = re.sub(r"(?i)^\s*explain\s+(analyze\s+|verbose\s+)*", "", norm)
+            # `\b` (không bắt buộc whitespace) để bóc cả `EXPLAIN(SELECT 1)` — nếu đòi `\s+`,
+            # dạng không-space không bị bóc → inner==norm → đệ quy vô hạn (RecursionError).
+            inner = re.sub(r"(?i)^\s*explain\b\s*(analyze\s+|verbose\s+)*", "", norm)
+            if inner == norm or not inner.strip():
+                # không bóc được gì (dạng lạ) → deny thay vì đệ quy, tránh RecursionError/log-flood.
+                return Decision("deny", "EXPLAIN dạng không phân loại được — từ chối", "SQL_NOT_READ")
             return classify_sql(inner, dialect)
         if word in {"DESC", "DESCRIBE", "SHOW"}:
             return Decision("allow", "read-only metadata query", "SQL_READONLY")
