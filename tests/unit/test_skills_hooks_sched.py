@@ -40,6 +40,20 @@ def test_skill_precedence_and_disclosure(tmp_path: Path) -> None:
     assert "WORKSPACE BODY" in loader.load_body("report")
 
 
+def test_skill_loader_tolerates_one_broken_skill(tmp_path: Path) -> None:
+    """1 SKILL.md hỏng (YAML lỗi cú pháp, không chỉ thiếu field) không được chặn
+    discovery của skill khác trong cùng thư mục/tier."""
+    bundled = tmp_path / "bundled"
+    _mk_skill(bundled, "good", "Skill tốt vẫn nạp được bình thường dù skill khác hỏng")
+    broken = bundled / "broken"
+    broken.mkdir(parents=True)
+    (broken / "SKILL.md").write_text("---\nname: [khong-dong-ngoac\n---\nbody", encoding="utf-8")
+    loader = SkillLoader({"bundled": bundled})
+    skills = loader.discover()
+    assert "good" in skills
+    assert "broken" not in skills
+
+
 def test_skill_lint_rejects_vague() -> None:
     with pytest.raises(UserFacingError):
         lint_description("x", "skill")
@@ -136,6 +150,64 @@ def test_cron_overlap_skip(tmp_path: Path) -> None:
 def test_compute_next() -> None:
     assert compute_next("at:2026-01-01", 100.0, "UTC") is None
     assert compute_next("every:60", 100.0, "UTC") == 160.0
+
+
+def test_compute_next_cron_respects_declared_timezone(monkeypatch) -> None:
+    """[Timezone fix] `compute_next` từng cắm cứng UTC cho spec `cron:` — job "9h sáng"
+    khai timezone Asia/Ho_Chi_Minh (UTC+7) phải nhận `base` datetime lệch +7h so với
+    UTC, không phải datetime UTC trần. `croniter` không cài trong môi trường test (lazy
+    optional dep) nên giả module qua `sys.modules` để bắt đúng `base` mà code truyền
+    vào — không phụ thuộc cài đặt nội bộ của croniter thật."""
+    import sys
+    import types
+
+    captured: dict = {}
+
+    class _FakeCroniter:
+        def __init__(self, expr: str, base) -> None:
+            captured["base"] = base
+
+        def get_next(self, ret_type):
+            return captured["base"].timestamp()
+
+    fake_mod = types.ModuleType("croniter")
+    fake_mod.croniter = _FakeCroniter  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "croniter", fake_mod)
+
+    compute_next("cron:0 9 * * *", 1_700_000_000.0, "Asia/Ho_Chi_Minh")
+    assert captured["base"].utcoffset().total_seconds() == 7 * 3600
+
+    compute_next("cron:0 9 * * *", 1_700_000_000.0, "UTC")
+    assert captured["base"].utcoffset().total_seconds() == 0
+
+
+def test_compute_next_cron_unknown_timezone_falls_back_utc_not_crash(monkeypatch) -> None:
+    import sys
+    import types
+
+    captured: dict = {}
+
+    class _FakeCroniter:
+        def __init__(self, expr: str, base) -> None:
+            captured["base"] = base
+
+        def get_next(self, ret_type):
+            return captured["base"].timestamp()
+
+    fake_mod = types.ModuleType("croniter")
+    fake_mod.croniter = _FakeCroniter  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "croniter", fake_mod)
+
+    result = compute_next("cron:0 9 * * *", 1_700_000_000.0, "Not/A_Real_Zone")
+    assert result is not None
+    assert captured["base"].utcoffset().total_seconds() == 0  # fallback UTC, không crash
+
+
+def test_compute_next_cron_numeric_offset() -> None:
+    from yett.sched.cron import _resolve_tzinfo
+
+    assert _resolve_tzinfo("UTC+7").utcoffset(None).total_seconds() == 7 * 3600
+    assert _resolve_tzinfo("UTC-05:30").utcoffset(None).total_seconds() == -5.5 * 3600
 
 
 async def test_unattended_approval_timeout() -> None:

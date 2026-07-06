@@ -68,8 +68,44 @@ class CronStore:
         self._conn.close()
 
 
+# [Timezone fix] Offset cố định cho zone dùng trong dự án (Việt Nam không có DST nên
+# UTC+7 đúng quanh năm). `zoneinfo.ZoneInfo` cho tên IANA bất kỳ CHỈ chạy được nếu hệ
+# điều hành có sẵn tzdata (Linux/macOS thường có; Windows KHÔNG có sẵn — cần gói
+# `tzdata` PyPI, [Inference] xác nhận bằng cách chạy trực tiếp trên máy dev Windows ở
+# đây: `ZoneInfo("UTC")` cũng lỗi `ZoneInfoNotFoundError` nếu thiếu gói này). Vì
+# `tzdata` không phải dependency của dự án (không được thêm mới), bảng offset cố định
+# này là đường CHẮC CHẮN chạy đúng trên mọi OS cho các zone phổ biến của harness; zone
+# khác thử `zoneinfo` (chạy được nếu OS có tzdata) rồi fallback UTC thay vì crash job.
+_FIXED_OFFSET_HOURS: dict[str, float] = {
+    "UTC": 0.0,
+    "Asia/Ho_Chi_Minh": 7.0,
+}
+
+
+def _resolve_tzinfo(tz: str):
+    """Trả tzinfo cho tên timezone khai báo — KHÔNG bao giờ raise (fallback UTC)."""
+    import re
+    from datetime import timedelta, timezone as _tz
+
+    if tz in _FIXED_OFFSET_HOURS:
+        return _tz(timedelta(hours=_FIXED_OFFSET_HOURS[tz]))
+    m = re.fullmatch(r"UTC?([+-])(\d{1,2})(?::?(\d{2}))?", tz)
+    if m:
+        sign, hh, mm = m.group(1), int(m.group(2)), int(m.group(3) or 0)
+        delta = timedelta(hours=hh, minutes=mm)
+        return _tz(-delta if sign == "-" else delta)
+    try:
+        from zoneinfo import ZoneInfo
+
+        return ZoneInfo(tz)
+    except Exception:
+        return _tz.utc
+
+
 def compute_next(spec: str, now: float, tz: str) -> float | None:
-    """Tính lần chạy kế. at → None sau khi chạy; every:N → now+N; cron → dùng croniter nếu có."""
+    """Tính lần chạy kế. at → None sau khi chạy; every:N → now+N; cron → dùng croniter nếu có,
+    tôn trọng `tz` khai báo (không cắm cứng UTC — job "9h sáng" phải chạy đúng giờ địa
+    phương của host, không phải giờ UTC)."""
     kind, _, val = spec.partition(":")
     if kind == "at":
         return None
@@ -78,10 +114,10 @@ def compute_next(spec: str, now: float, tz: str) -> float | None:
     if kind == "cron":
         try:
             from croniter import croniter  # optional
-            from datetime import datetime, timezone as _tz
+            from datetime import datetime
 
-            base = datetime.fromtimestamp(now, tz=_tz.utc)
+            base = datetime.fromtimestamp(now, tz=_resolve_tzinfo(tz))
             return float(croniter(val, base).get_next(float))
         except Exception:
-            return now + 3600.0  # fallback: mỗi giờ
+            return now + 3600.0  # fallback: mỗi giờ (thiếu croniter hoặc spec parse lỗi)
     return None

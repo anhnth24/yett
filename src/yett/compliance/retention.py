@@ -28,17 +28,3 @@ def purge_old_spans(db_path: str | Path, *, now: float, keep_days: int, auditor:
     if auditor:
         auditor(kind="retention", detail={"table": "spans", "deleted": n, "cutoff": cutoff})
     return n
-
-
-def purge_old_messages(db_path: str | Path, *, now: float, keep_days: int, auditor: Callable[..., None] | None = None) -> int:
-    cutoff = now - keep_days * 86400
-    conn = sqlite3.connect(str(db_path))
-    try:
-        cur = conn.execute("DELETE FROM messages WHERE ts < ?", (cutoff,))
-        conn.commit()
-        n = cur.rowcount
-    finally:
-        conn.close()
-    if auditor:
-        auditor(kind="retention", detail={"table": "messages", "deleted": n, "cutoff": cutoff})
-    return n

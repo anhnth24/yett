@@ -26,6 +26,7 @@ from yett.security.filters import redact_attrs
 from yett.tools.builtin.codenav import GrepTool, ListDirTool, SearchTool
 from yett.tools.builtin.exec import ExecTool
 from yett.tools.builtin.files import ReadFileTool, WriteFileTool
+from yett.tools.builtin.http_fetcher import SafeHttpFetcher
 from yett.tools.builtin.web_fetch import WebFetchTool
 from yett.tools.projects import ProjectScope
 from yett.tools.registry import Registry
@@ -143,6 +144,11 @@ class App:
         self.registry.register(ListDirTool(self.scope))
         self.registry.register(GrepTool(self.scope))
         self.registry.register(SearchTool(self.scope))
+        # [RT-7] fetcher=None (không inject, vd test) + có allowlist -> dựng fetcher SSRF-safe
+        # thật (SafeHttpFetcher) thay vì để web_fetch không bao giờ được đăng ký trong runtime
+        # thật. allowlist rỗng -> không đăng ký tool (sẽ luôn deny, không có ích).
+        if fetcher is None and cfg.egress.allowlist:
+            fetcher = SafeHttpFetcher(cfg.egress.allowlist)
         if fetcher is not None:
             self.registry.register(WebFetchTool(cfg.egress.allowlist, fetcher))
 
@@ -200,7 +206,7 @@ class App:
         from yett.tools.db.executor import RealDbExecutor
 
         profiles = {
-            name: DbProfile(driver=p.driver, dsn_secret=p.dsn_secret, readonly=p.readonly)
+            name: DbProfile(driver=p.driver, dsn_secret=p.dsn_secret)
             for name, p in self.cfg.databases.items()
         }
         self.registry.register(DbQueryTool(profiles, RealDbExecutor(), self._secrets))
@@ -218,8 +224,8 @@ class App:
         for name, h in self.cfg.remote.hosts.items():
             addr = f"{h.user}@{h.address}" if h.user else h.address
             hosts[name] = HostProfile(
-                address=addr, auth=h.auth, vpn_required=h.vpn_required, tier=h.tier,
-                log_paths=h.log_paths, deploy_script=h.deploy_script,
+                address=addr, auth=h.auth, port=h.port, vpn_required=h.vpn_required,
+                tier=h.tier, log_paths=h.log_paths, deploy_script=h.deploy_script,
             )
         self.host_registry = HostRegistry(hosts)
         backend = AsyncSSHBackend()

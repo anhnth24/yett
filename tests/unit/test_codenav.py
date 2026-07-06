@@ -128,3 +128,43 @@ def test_search_out_of_scope_reported_not_leaked(tmp_path: Path) -> None:
     res = asyncio.run(tool.run(args, _Ctx()))
     assert res.is_error
     assert "TOPSECRET" not in res.content  # ngoài scope → không đọc được nội dung
+
+
+# --- ReDoS guard: regex/scan chậm không được treo cả turn ---
+def test_grep_regex_timeout_denied_not_hung(tmp_path: Path, monkeypatch) -> None:
+    """[ReDoS guard] Không cần regex thảm hại thật (chậm/không ổn định) — giả lập việc
+    scan chạy quá lâu bằng cách hạ timeout xuống rất thấp + làm `_search_all` chậm hơn
+    ngưỡng đó; phải trả lỗi agent-đọc-được thay vì treo/raise ra ngoài."""
+    import time
+
+    from yett.tools.builtin import codenav
+
+    root = _mkproj(tmp_path)
+    tool = GrepTool(_scope(root))
+    monkeypatch.setattr(codenav, "_REGEX_TIMEOUT_SEC", 0.05)
+
+    def _slow_search_all(self, roots, rx, glob, cap):
+        time.sleep(0.3)
+        return []
+
+    monkeypatch.setattr(GrepTool, "_search_all", _slow_search_all)
+    res = asyncio.run(tool.run({"pattern": "handleOrder", "path": str(root)}, _Ctx()))
+    assert res.is_error
+    assert "DENIED" in res.content and "0.05" in res.content
+
+
+# --- `_section` không để 1 sub-op lỗi crash cả batch ---
+async def test_search_section_survives_unexpected_exception(tmp_path: Path, monkeypatch) -> None:
+    root = _mkproj(tmp_path)
+    tool = SearchTool(_scope(root))
+
+    async def _boom(args, ctx):
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(tool._grep, "run", _boom)
+    args = {"grep": [{"pattern": "handleOrder"}], "read": [str(root / "README.md")]}
+    tool.validate(args)
+    res = await tool.run(args, _Ctx())
+    assert res.is_error  # section grep lỗi
+    assert "[lỗi không mong đợi]" in res.content and "kaboom" in res.content
+    assert "handleOrder docs" in res.content  # section read khác vẫn chạy bình thường

@@ -55,6 +55,23 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def non_loopback_warning(host: str) -> str | None:
+    """Trả cảnh báo nếu `--host` bind ra ngoài loopback (127.0.0.1/localhost/::1), None
+    nếu không. Server không có auth (chỉ Host/Origin check chống DNS-rebinding cho
+    localhost) — bind ra LAN/0.0.0.0 phơi API cho cả mạng, cần tường lửa/reverse-proxy
+    có xác thực đứng trước."""
+    from yett.web.server import LOOPBACK_HOSTS
+
+    if host in LOOPBACK_HOSTS:
+        return None
+    return (
+        f"[yett] CẢNH BÁO: --host={host} không phải localhost — API sẽ lộ ra ngoài máy "
+        "này KHÔNG có xác thực (chỉ kiểm Host/Origin, không phải auth). Chỉ dùng sau "
+        "tường lửa/VPN hoặc reverse-proxy có xác thực đứng trước; khuyến nghị SSH tunnel "
+        "(`ssh -L <port>:127.0.0.1:<port> host`) thay vì bind ra ngoài trực tiếp."
+    )
+
+
 def _cmd_serve(args) -> int:
     from yett.app import build_app
     from yett.config.loader import load_config
@@ -65,6 +82,9 @@ def _cmd_serve(args) -> int:
     if not Path(args.config).exists():
         print(f"[yett] chưa có config {args.config}. Chạy 'yett setup' trước.", file=sys.stderr)
         return 1
+    warning = non_loopback_warning(args.host)
+    if warning:
+        print(warning, file=sys.stderr)
     pricing = args.pricing if Path(args.pricing).exists() else None
     try:
         secrets = build_secret_store(load_config(args.config).secret_backend)

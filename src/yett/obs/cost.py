@@ -24,14 +24,6 @@ def compute_cost(provider: str, model: str, usage: Usage, pricing: dict) -> floa
     )
 
 
-def compute_call_cost(provider: str, model: str, calls: int, pricing: dict) -> float:
-    """USD cho tool tính theo lần gọi (image_gen, web_search)."""
-    row = _lookup(provider, model, pricing)
-    if row is None:
-        return 0.0
-    return round(calls * row.per_call, 6)
-
-
 def _lookup(provider: str, model: str, pricing: dict) -> PriceRow | None:
     prov = pricing.get(provider)
     if not prov:

@@ -4,7 +4,7 @@
 >
 > **Tên:** *yett* = cổng lưới sắt của thành lũy, loại thả xuống đóng kín theo mặc định — đúng triết lý fail-closed của Policy Gate (mọi tool call qua một cổng, mặc định từ chối). Lệnh CLI: `yett`.
 >
-> **Trạng thái:** Bộ khung code Phase 1–3 đã implement, 227 test collect được (224 xanh, 2 `xfail` lộ bug đã biết chờ vá, 1 skip khi máy không có Docker daemon), mypy strict, ruff, import-linter. Một số hạng mục mới chỉ **kiểm chứng qua fake/logic đơn lẻ, chưa verify end-to-end** — xem cột "Kiểm chứng" trong [Trạng thái implement](#trạng-thái-implement) bên dưới.
+> **Trạng thái:** Bộ khung code đã implement (hardening P0–P2 theo `plans/260705-1658-harden-yett-harness/`), 379 test collect được (372 xanh, 4 skip khi máy không có Docker daemon), mypy strict, ruff, import-linter đều sạch. Một số hạng mục mới chỉ **kiểm chứng qua fake/logic đơn lẻ, chưa verify end-to-end** — xem cột "Kiểm chứng" trong [Trạng thái implement](#trạng-thái-implement) bên dưới. *(Trên máy dev Windows dùng để soát lần cuối: 3 test web UI dùng cổng cố định — `test_web_ui_health_chat_index`, `test_web_approval_*` — fail vì OS chặn bind vào đúng 2 cổng đó (`WinError 10013`, xác nhận bằng bind socket thuần, không liên quan code); các test web khác dùng cổng 0 (OS tự chọn) đều xanh.)*
 
 ## Chạy thử nhanh
 
@@ -15,7 +15,7 @@ yett setup           # wizard cài đặt từng bước: provider → model →
 yett serve --open    # 🖥️ mở giao diện chat WEB (localhost) — giống "app"
 yett chat "báo cáo tiến độ tuần này của các project"   # hoặc dùng CLI
 yett usage --by provider --state state
-pytest -q            # 227 test (224 xanh, 2 xfail biết trước, 1 skip nếu thiếu Docker daemon)
+pytest -q            # 379 test (372 xanh, 4 skip nếu thiếu Docker daemon)
 ```
 
 **Muốn dùng như một app Windows:** `yett serve --open` mở UI chat trong trình duyệt; hoặc đóng gói `yett.exe` (double-click chạy, không cần Python) — xem [`packaging/BUILD_EXE.md`](packaging/BUILD_EXE.md).
@@ -27,7 +27,7 @@ Chọn 1 trong 10+ model top (GLM 5.2, MiniMax M3, DeepSeek, Gemini, GPT-5.5, Cl
 
 Đã có code chạy được + test cho lõi cả 3 phase. Phần cần tài nguyên ngoài (LLM API thật, Docker daemon, SSH/VPN tới server thật, Telegram) được thiết kế qua interface + backend inject được, và test bằng fake/offline — đúng nguyên tắc no-egress trong test.
 
-**Chú giải cột "Kiểm chứng":** ✅ e2e = có test lắp ráp thật (App/loop thật, không chỉ gọi hàm lẻ). 🟡 fake = logic đúng khi chạy qua `FakeProvider`/stand-in, **chưa** verify với backend thật (provider/API/daemon thật) — có thể còn lệch khi nối thật. ❌ chưa wire = cấu hình cho phép nhưng đường chạy thật (`App`/`yett chat`) chưa thực sự dùng tới; có test `xfail(strict=True)` lộ đúng bug, sẽ gỡ marker khi vá xong.
+**Chú giải cột "Kiểm chứng":** ✅ e2e = có test lắp ráp thật (App/loop thật, không chỉ gọi hàm lẻ). 🟡 fake/wired = logic đúng khi chạy qua `FakeProvider`/stand-in hoặc đã wire vào `App` nhưng backend thật (provider/API/Docker daemon) **chưa** được quan sát chạy trên máy này — có thể còn lệch khi nối thật. ❌ chưa wire = cấu hình cho phép nhưng đường chạy thật (`App`/`yett chat`) chưa thực sự dùng tới (tool/gate tồn tại, không có caller thật).
 
 | Khối | Kiểm chứng | Test |
 |---|---|---|
@@ -37,10 +37,11 @@ Chọn 1 trong 10+ model top (GLM 5.2, MiniMax M3, DeepSeek, Gemini, GPT-5.5, Cl
 | Provider interface + failover + FakeProvider | ✅ e2e (với FakeProvider) | `test_provider_failover` |
 | Tool registry + wiring bất biến + builtin tools + project scope | ✅ e2e | `test_tools_wiring` |
 | Sandbox: local (dev/test), chạy trực tiếp trên host | ✅ e2e | `test_tools_wiring` |
-| Sandbox: **docker (production, hardened)** | ❌ chưa wire — `sandbox.backend: docker` hiện fallback về `LocalSandbox` (chạy thẳng trên host, không mount workspace, không cô lập mạng); `DockerSandbox` tồn tại nhưng `build_app()`/`App` chưa bao giờ dùng tới nó | `test_docker_sandbox` (`xfail`, cần Docker daemon; skip sạch nếu không có) |
-| Agent loop: bounded + prune + checkpoint/resume + cancel | 🟡 fake — đúng với `FakeProvider`; với provider OpenAI-compatible thật, system prompt hiện KHÔNG được gửi và thứ tự message assistant(tool_use)→tool sai chuẩn OpenAI | `test_core_loop` (fake), `test_real_provider_contract` (`xfail`, provider thật qua transport inject) |
+| Sandbox: **docker (production, hardened)**, `App` wire thật (mount workspace + host→container cwd) **(wired)** | 🟡 wired, logic-verified qua unit test trên argv/mounts; backend=docker thiếu daemon → fail-closed (từ chối, không tụt về host) — **e2e (exec chạy thật trong container) chưa quan sát trên máy dev này** (không có Docker daemon) | `test_docker_wiring` (unit, argv/mounts), `test_docker_sandbox` (integration, `skipif` không có daemon) |
+| Agent loop: bounded + prune + checkpoint/resume + cancel | 🟡 fake — đúng với `FakeProvider`; contract test xác nhận system prompt được gửi + đúng thứ tự message assistant(tool_use)→tool_result qua transport inject, nhưng **chưa gọi API thật** | `test_core_loop` (fake), `test_real_provider_contract` (transport inject, không phải API thật) |
 | Tracing + span store + cost ledger | ✅ e2e | `test_obs` |
-| Memory: workspace + review gate + FTS5 (tiếng Việt) | ✅ e2e | `test_memory` |
+| Memory: workspace file (AGENTS/SOUL/MEMORY.md → system prompt) **(wired vào `yett chat`)** | ✅ e2e | `test_memory`, verify `App.chat` |
+| Memory: review gate (staging cho agent đề xuất ghi MEMORY.md) | ❌ chưa wire — `MemoryReviewGate` 0 caller trong `src`; chưa có tool nào cho agent GHI memory (registry chỉ có tool đọc), `workspace.py` chỉ đọc file. Bất biến "agent không ghi thẳng MEMORY.md" hiện đúng-do-cấu-trúc (không có đường ghi nào tồn tại), không phải do gate đang chặn một đường ghi thật — "wire" gate này là xây tính năng ghi-memory mới, nằm ngoài phạm vi hardening (xem plan Phase 7, RT-11) | `test_memory` (gọi gate trực tiếp, không qua `App`) |
 | Remote ops: host profile + ssh_exec + log_read + vpn | 🟡 fake (backend inject, chưa SSH/VPN thật) | `test_remote_db` |
 | DB tools: db_query/db_config read-only 4 lớp | 🟡 fake (executor inject, chưa DB thật ngoài sqlite) | `test_remote_db` |
 | Skills: loader + disclosure + lint + review gate **(wired vào `yett chat`)** | ✅ e2e | `test_skills_hooks_sched`, `test_group2_wired` |

@@ -18,7 +18,6 @@ from yett.tools.db.sqlguard import classify_sql
 class DbProfile(BaseModel):
     driver: Literal["postgres", "mysql", "sqlserver", "sqlite"]
     dsn_secret: str  # connection string là secret; model chỉ thấy tên profile
-    readonly: bool = True
 
 
 class DbExecutor(Protocol):

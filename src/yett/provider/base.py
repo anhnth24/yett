@@ -16,7 +16,6 @@ class Usage:
     input_tokens: int
     output_tokens: int
     cache_read_tokens: int = 0
-    cache_write_tokens: int = 0
 
 
 @dataclass(frozen=True)
