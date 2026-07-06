@@ -4,7 +4,7 @@
 >
 > **Tên:** *yett* = cổng lưới sắt của thành lũy, loại thả xuống đóng kín theo mặc định — đúng triết lý fail-closed của Policy Gate (mọi tool call qua một cổng, mặc định từ chối). Lệnh CLI: `yett`.
 >
-> **Trạng thái:** Bộ khung code đã implement (hardening P0–P2 theo `plans/260705-1658-harden-yett-harness/`), 379 test collect được (372 xanh, 4 skip khi máy không có Docker daemon), mypy strict, ruff, import-linter đều sạch. Một số hạng mục mới chỉ **kiểm chứng qua fake/logic đơn lẻ, chưa verify end-to-end** — xem cột "Kiểm chứng" trong [Trạng thái implement](#trạng-thái-implement) bên dưới. *(Trên máy dev Windows dùng để soát lần cuối: 3 test web UI dùng cổng cố định — `test_web_ui_health_chat_index`, `test_web_approval_*` — fail vì OS chặn bind vào đúng 2 cổng đó (`WinError 10013`, xác nhận bằng bind socket thuần, không liên quan code); các test web khác dùng cổng 0 (OS tự chọn) đều xanh.)*
+> **Trạng thái:** Bộ khung code đã implement (hardening P0–P2 theo `plans/260705-1658-harden-yett-harness/`), 398 test collect được (394 xanh, 4 skip khi máy không có Docker daemon), mypy strict, ruff, import-linter đều sạch. Một số hạng mục mới chỉ **kiểm chứng qua fake/logic đơn lẻ, chưa verify end-to-end** — xem cột "Kiểm chứng" trong [Trạng thái implement](#trạng-thái-implement) bên dưới. *(Lưu ý test web UI dùng cổng cố định — `test_web_ui_health_chat_index`, `test_web_approval_*` — có thể fail lúc-được-lúc-không trên Windows khi dải cổng bị WSL2/Hyper-V loại trừ (`WinError 10013`, không liên quan code); fix triệt để là bind cổng 0 (ephemeral), chưa làm.)*
 
 ## Chạy thử nhanh
 
@@ -15,7 +15,7 @@ yett setup           # wizard cài đặt từng bước: provider → model →
 yett serve --open    # 🖥️ mở giao diện chat WEB (localhost) — giống "app"
 yett chat "báo cáo tiến độ tuần này của các project"   # hoặc dùng CLI
 yett usage --by provider --state state
-pytest -q            # 379 test (372 xanh, 4 skip nếu thiếu Docker daemon)
+pytest -q            # 398 test (394 xanh, 4 skip nếu thiếu Docker daemon)
 ```
 
 **Muốn dùng như một app Windows:** `yett serve --open` mở UI chat trong trình duyệt; hoặc đóng gói `yett.exe` (double-click chạy, không cần Python) — xem [`packaging/BUILD_EXE.md`](packaging/BUILD_EXE.md).
