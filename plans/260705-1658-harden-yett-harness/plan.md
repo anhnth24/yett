@@ -187,6 +187,20 @@ Nhánh: `claude/harness-reference-architecture-0wwuek`. Sóng chạy đúng thi�
 
 **Kết quả cuối (Windows local):** pytest **394 passed, 4 skipped**, 0 failed; mypy ✓; ruff ✓; import-linter 2 kept ✓.
 
+### Codex adversarial review (2026-07-06) — round độc lập, đã fix
+
+Sau khi org spend-limit reset đủ chạy Codex (auth qua ChatGPT account riêng, không đụng limit Anthropic), chạy `/codex:rescue` review đối kháng toàn diff. Báo cáo: `reports/from-codex-adversarial-review-260706-0933-harden-yett-plan.md`. **0 Critical.** Codex xác nhận holds: write_file protection, re-gate/re-filter, SQL guards, SSRF fetcher pinned-connect, subagent subset (loop+RPC), dead-code sạch.
+
+| # | Sev | Tóm tắt | Disposition (commit `cb4dddb`) |
+|---|-----|---------|--------------------------------|
+| H1 | High | exec immutable bypass: `>\|` clobber, `python -c "open(cfg,'w')"`, `sh -c "..."` không lộ operand qua token-parse | **FIXED** — `_exec_hits_protected` quét substring fail-closed toàn chuỗi lệnh |
+| M1 | Med | `journalctl --vacuum-*/--rotate/--flush` lọt SSH readonly | **FIXED** — `cmdguard._MUTATING_FLAGS` |
+| M2 | Med | `sk-` regex đứt ở `_`/`.` (sk-cp-..._..., sk-proj-....) | **FIXED** — alphabet `[A-Za-z0-9._-]` |
+| L1 | Low | HookRunner báo mutate khi hook tự khai mutate dù không đổi | NO CHANGE (by design — explicit mutate được honor; bug empty-runner đã fix `a55859a`) |
+| L2 | Low | `network: proxy` unenforced egress | NO CHANGE (documented controlled-egress mode) |
+
+**Kết quả sau fix (Windows local):** pytest **400 passed, 4 skipped**, 0 failed; mypy ✓; ruff ✓; import-linter 2 kept ✓.
+
 **Kết quả verify (Windows local):** pytest **311 passed, 4 skipped** (docker — không daemon), 0 failed; mypy strict ✓; ruff ✓; import-linter 2 contracts kept ✓. Cả 3 marker xfail của Phase 1 đã được Phase 2/3/5 gỡ như thiết kế.
 
 **Conflict merge đã xử lý (đều do worktree snapshot trước Sóng 0):** `test_real_provider_contract.py` + `test_docker_sandbox.py` (add/add → lấy bản post-fix của phase), `test_setup_wizard.py` (xfail marker vs platform-aware rewrite → lấy bản Phase 5).
@@ -197,7 +211,7 @@ Nhánh: `claude/harness-reference-architecture-0wwuek`. Sóng chạy đúng thi�
 1. Docker integration e2e trên máy/CI có daemon (unit-verified rồi, e2e chưa — acceptance item docker còn `[~]`).
 2. Push nhánh → quan sát CI Linux + Windows thực tế (local đã xanh; cloud chưa chạy).
 3. Fix triệt để flake port web-test: `serve(port=0)` ephemeral thay port cứng.
-4. Low findings chưa fix (không chặn): L1 journalctl sub-command gate; M1 sâu (cmdguard.classify đầy đủ cho exec local); M3 (document/đổi resume guarantee). L3/L4 đã accept.
+4. Low findings chưa fix (không chặn): M1-sâu (áp cmdguard.classify đầy đủ cho exec local — hiện exec qua BasicGate chỉ chạy denylist); M3 (document/đổi resume at-least-once guarantee). L3/L4 + codex-L1/L2 đã accept/document. *(journalctl đã fix ở codex round — M1 codex.)*
 
 ## Adversarial Review — Sóng 0+1 (2026-07-05)
 
