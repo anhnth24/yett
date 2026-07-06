@@ -1,0 +1,13 @@
+<!-- ponytail: vector sphere stand-in for the design's raster planet-magician.png. Swap in the PNG if exact art is needed. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120">
+  <defs>
+    <radialGradient id="m" cx="38%" cy="32%" r="75%">
+      <stop offset="0%" stop-color="#B79BE8"/>
+      <stop offset="45%" stop-color="#6D4AA6"/>
+      <stop offset="100%" stop-color="#2E1D52"/>
+    </radialGradient>
+  </defs>
+  <circle cx="60" cy="60" r="58" fill="url(#m)"/>
+  <ellipse cx="44" cy="40" rx="20" ry="12" fill="#fff" opacity="0.22"/>
+  <circle cx="78" cy="80" r="9" fill="#2E1D52" opacity="0.35"/>
+</svg>

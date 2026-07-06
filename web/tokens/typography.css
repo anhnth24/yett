@@ -1,0 +1,27 @@
+/* yett — typography tokens. Inter cho UI, mono hệ thống cho dữ liệu/lệnh. */
+:root {
+  --font-ui: 'Inter', system-ui, sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Code', Consolas, monospace;
+
+  /* Type scale (px) — console mật độ cao */
+  --text-caption: 10.5px;    /* nhãn caps, cột bảng — LUÔN kèm tracking caps */
+  --text-meta: 11.5px;       /* meta, timestamp, trace id */
+  --text-small: 12.5px;      /* nội dung phụ, hàng bảng */
+  --text-body: 13.5px;       /* body chuẩn của console */
+  --text-title: 15px;        /* tiêu đề card */
+  --text-screen: 16px;       /* tiêu đề màn hình (topbar) */
+  --text-stat: 24px;         /* số liệu lớn trên stat card */
+
+  /* Weights — 3 mức */
+  --w-read: 400;
+  --w-emphasize: 500;
+  --w-announce: 700;
+
+  /* Tracking */
+  --track-display: -0.01em;  /* heading/số lớn */
+  --track-caps: 0.07em;      /* BẮT BUỘC cho mọi text uppercase */
+
+  /* Leading */
+  --leading-tight: 1.2;
+  --leading-body: 1.5;
+}

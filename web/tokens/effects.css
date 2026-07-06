@@ -1,0 +1,18 @@
+/* yett — radii, shadow, motion. Phẳng, viền là cấu trúc chính; shadow chỉ 1 mức rất nhẹ. */
+:root {
+  /* Corner radii */
+  --r-control: 8px;          /* button, input, chip vuông */
+  --r-panel: 10px;           /* panel con trong card */
+  --r-card: 12px;            /* card chuẩn */
+  --r-feature: 14px;         /* card lớn (orbit stage, project) */
+  --r-pill: 999px;           /* pill, badge đếm */
+
+  /* Elevation — đúng 1 mức */
+  --shadow-card: 0 1px 2px rgba(20, 20, 10, 0.04);
+  --shadow-raised: 0 1px 2px rgba(20, 20, 10, 0.08); /* segmented control active */
+
+  /* Motion — nhanh, không bounce */
+  --ease: ease-out;
+  --dur-fast: 150ms;
+  --dur: 240ms;
+}

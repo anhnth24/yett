@@ -1,0 +1,41 @@
+/* yett — color tokens. Light professional: nền giấy ấm, mực gần đen, accent xanh rừng. */
+:root {
+  /* ---- Ink (text) ---- */
+  --ink: #171712;            /* heading, giá trị chính */
+  --body: #26261F;           /* body text */
+  --sub: #5c5c53;            /* secondary */
+  --mut: #8a8a7f;            /* muted / meta */
+  --faint: #a5a599;          /* faint / caption */
+
+  /* ---- Surfaces ---- */
+  --bg: #F6F6F3;             /* nền trang (giấy ấm, không trắng tinh) */
+  --side: #FBFBF9;           /* sidebar, topbar, panel phụ */
+  --card: #FFFFFF;           /* card chính */
+  --wash: #F1F1EB;           /* fill nhấn nhẹ (nav active, chip nền) */
+  --track: #EFEFE8;          /* rãnh progress */
+
+  /* ---- Borders ---- */
+  --line: #E3E3DD;           /* viền chuẩn */
+  --hair: #F1F1EB;           /* hairline chia dòng trong card */
+
+  /* ---- Accent (một accent duy nhất) ---- */
+  --acc: #1B6B52;            /* xanh rừng — CTA, trạng thái sống */
+  --acc-ink: #15573F;        /* accent đậm cho text nhỏ trên nền sáng */
+  --acc-wash: #F0F5F2;       /* nền tint accent (panel "đang làm dở") */
+  --acc-line: #D8E5DE;       /* viền tint accent */
+
+  /* ---- Semantic ---- */
+  --danger: #B4442F;         /* lỗi, thiếu, fail */
+  --warn: #C7930A;           /* chờ duyệt, cảnh báo */
+  --warn-line: #E8D9A0;      /* viền banner approval */
+  --idle: #D5D5CB;           /* dot trạng thái nghỉ */
+  --neutral-fill: #3E3E35;   /* fill progress tĩnh (không ngữ nghĩa) */
+
+  /* ---- Semantic aliases ---- */
+  --text-heading: var(--ink);
+  --text-body: var(--body);
+  --surface-page: var(--bg);
+  --surface-card: var(--card);
+  --border-default: var(--line);
+  --accent: var(--acc);
+}

@@ -1,0 +1,351 @@
+<!-- @dsCard group="Console" viewport="1280x760" subtitle="Màn Tổng quan (bố cục quỹ đạo) — composes Button/Card/Badge/Tag/Tabs/ApprovalBanner" name="yett Console — Tổng quan" -->
+<!-- @startingPoint section="Screens" subtitle="Console Tổng quan — sidebar + orbit + approval" viewport="1280x760" -->
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>yett Console — UI kit</title>
+<link rel="stylesheet" href="../../styles.css">
+<link rel="icon" href="../../assets/yett-tile.svg">
+<script crossorigin="anonymous" src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin="anonymous" src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script crossorigin="anonymous" src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+<script src="../../ds-support/loader.js"></script>
+<style>
+  html,body{margin:0;height:100%;background:var(--bg);font-family:var(--font-ui);color:var(--body)}
+  @keyframes pulseDot{0%,100%{opacity:1}50%{opacity:.35}}
+  @keyframes orbitSpin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+  @keyframes orbitSpinRev{from{transform:rotate(0)}to{transform:rotate(-360deg)}}
+  @media (prefers-reduced-motion: reduce){*{animation-duration:.01ms!important;animation-iteration-count:1!important}}
+</style>
+</head><body><div id="root"></div>
+<script type="text/babel">
+(window.__dsReady || Promise.resolve(window.YettDS)).then(() => {
+const { Button, Card, Badge, Tag, Tabs, ApprovalBanner, Input, Select, Switch } = window.YettDS;
+
+const NAV = [
+  { id: 'overview', label: 'Tổng quan', badge: 'apr' },
+  { id: 'agents', label: 'Agent' },
+  { id: 'projects', label: 'Project', right: '3' },
+  { id: 'creds', label: 'Credential', danger: '2 thiếu' },
+  { id: 'config', label: 'Cấu hình', right: 'YAML' },
+  { id: 'chat', label: 'Chat', right: '⏎' },
+];
+
+function Sidebar({ apr, screen, setScreen }) {
+  return (
+    <div style={{ width: 224, flexShrink: 0, display: 'flex', flexDirection: 'column', padding: '16px 12px', borderRight: '1px solid var(--line)', background: 'var(--side)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '2px 10px 16px' }}>
+        <img src="../../assets/yett-tile.svg" width="26" height="26" alt="yett" />
+        <div>
+          <div style={{ fontSize: 15, fontWeight: 700, letterSpacing: '-0.01em', color: 'var(--ink)' }}>yett</div>
+          <div style={{ fontSize: 10, color: 'var(--faint)', letterSpacing: '0.07em', fontWeight: 500 }}>AGENT HARNESS · ON-PREM</div>
+        </div>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        {NAV.map((n, i) => (
+          <div key={n.id} onClick={() => setScreen(n.id)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderRadius: 8, cursor: 'pointer', fontSize: 13.5, background: n.id === screen ? 'var(--wash)' : 'transparent', color: n.id === screen ? 'var(--ink)' : 'var(--sub)', fontWeight: n.id === screen ? 600 : 500 }}>
+            <span style={{ flex: 1 }}>{n.label}</span>
+            {n.badge === 'apr' && apr === null ? <span style={{ minWidth: 20, height: 18, borderRadius: 99, background: 'var(--acc)', color: '#fff', fontSize: 11, fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 7px' }}>1</span> : null}
+            {n.right ? <span style={{ fontSize: 10.5, color: 'var(--faint)' }}>{n.right}</span> : null}
+            {n.danger ? <span style={{ fontSize: 11, color: 'var(--danger)', fontWeight: 500 }}>{n.danger}</span> : null}
+          </div>
+        ))}
+      </div>
+      <div style={{ marginTop: 'auto', padding: '12px 14px', borderRadius: 10, background: 'var(--wash)', fontSize: 12, color: 'var(--mut)', lineHeight: 1.7 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--acc)' }} />Docker · no network</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--acc)' }} />Policy Gate: fail-closed</div>
+      </div>
+    </div>
+  );
+}
+
+function Orbiter({ size, dur, delay, img, imgSize, label }) {
+  return (
+    <div style={{ position: 'absolute', width: size, height: size, animation: `orbitSpin ${dur}s linear infinite`, animationDelay: delay }}>
+      <div style={{ position: 'absolute', top: 0, left: '50%' }}>
+        <div style={{ transform: 'translate(-50%,-50%)' }}>
+          <div style={{ animation: `orbitSpinRev ${dur}s linear infinite`, animationDelay: delay, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5 }}>
+            <img src={img} width={imgSize} height={imgSize} style={{ borderRadius: '50%', boxShadow: '0 5px 14px rgba(20,60,80,0.28)' }} alt="" />
+            <span style={{ padding: '2px 9px', borderRadius: 99, background: 'var(--card)', border: '1px solid var(--line)', fontSize: 10.5, fontWeight: 500, color: 'var(--sub)', whiteSpace: 'nowrap' }}>{label}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function OrbitStage() {
+  return (
+    <Card feature style={{ minWidth: 0, position: 'relative', minHeight: 440, overflow: 'hidden', padding: 0 }}>
+      <div style={{ position: 'absolute', top: 18, left: 20, zIndex: 2 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--ink)' }}>Hệ agent</div>
+        <div style={{ fontSize: 11, color: 'var(--faint)', letterSpacing: '0.07em', textTransform: 'uppercase', marginTop: 2 }}>Solar system · live</div>
+      </div>
+      <div style={{ position: 'absolute', top: 18, right: 18, zIndex: 2 }}>
+        <Badge status="running" pulse>1 đang chạy · 2 idle</Badge>
+      </div>
+      <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ position: 'absolute', width: 220, height: 220, borderRadius: '50%', border: '1.5px solid var(--track)' }} />
+        <div style={{ position: 'absolute', width: 320, height: 320, borderRadius: '50%', border: '1.5px solid #F4F4EE' }} />
+        <div style={{ position: 'absolute', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+          <img src="../../assets/planet-magician.svg" width="104" height="104" style={{ borderRadius: '50%', boxShadow: '0 10px 30px rgba(40,30,80,0.28)' }} alt="main" />
+          <div style={{ fontSize: 12, fontWeight: 600, background: 'var(--ink)', color: '#fff', borderRadius: 99, padding: '4px 13px' }}>main <span style={{ fontWeight: 400, opacity: 0.75 }}>· vòng 6/20</span></div>
+        </div>
+        <Orbiter size={220} dur={52} delay="0s" img="../../assets/planet-blue.svg" imgSize={42} label="researcher · idle" />
+        <Orbiter size={320} dur={84} delay="-31s" img="../../assets/planet-green.svg" imgSize={36} label="writer · idle" />
+      </div>
+      <div style={{ position: 'absolute', bottom: 14, left: 20, right: 20, display: 'flex', justifyContent: 'space-between', zIndex: 2 }}>
+        <span style={{ fontSize: 11, color: 'var(--faint)' }}>Toolset con ⊆ cha — không leo thang quyền.</span>
+        <span style={{ fontSize: 11, color: 'var(--faint)' }}>Mọi tool call xuyên Policy Gate.</span>
+      </div>
+    </Card>
+  );
+}
+
+const HAIR_ROW = { display: 'flex', alignItems: 'center', gap: 9, padding: '8px 0', borderBottom: '1px solid var(--hair)', fontSize: 12.5 };
+
+function AgentsScreen({ apr, setApr }) {
+  const cron = [
+    { id: 'db-health', spec: 'every:3600', next: 'hôm nay 17:00', last: '16:00 · ok', s: 'running', st: 'running' },
+    { id: 'weekly-report', spec: 'cron:0 8 * * 1', next: 'T2 08:00', last: 'T2 08:00 · ok', s: 'idle', st: 'ok' },
+    { id: 'backup-check', spec: 'cron:30 23 * * *', next: '23:30', last: 'approval timeout → fail sạch', s: 'danger', st: 'failed' },
+  ];
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px 40px' }}>
+      <div style={{ marginBottom: 14 }}>
+        <ApprovalBanner tool="ssh_exec" host="uat-01" command="bash /opt/deploy/uat-deploy.sh go-learn" decided={apr} onApprove={() => setApr('ok')} onDeny={() => setApr('no')} />
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.4fr) minmax(0,1fr)', gap: 12, marginBottom: 14 }}>
+        <Card title="Lượt đang chạy">
+          {[{ n: 'main — "báo cáo tiến độ tuần này…"', tr: '7f3a91c2', it: '6/20', tok: '41k/120k token', w: '30%' }, { n: 'cron:db-health — "Kiểm tra DB UAT"', tr: 'b2e04d11', it: '3/8', tok: '12k/120k token', w: '37%' }].map((r) => (
+            <div key={r.tr} style={{ padding: '10px 0', borderBottom: '1px solid var(--hair)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                <Badge status="running" pulse />
+                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.n}</span>
+                <span style={{ fontSize: 11, color: 'var(--faint)', fontFamily: 'var(--font-mono)' }}>{r.tr}</span>
+              </div>
+              <div style={{ display: 'flex', gap: 14, margin: '6px 0 0 15px', fontSize: 11.5, color: 'var(--mut)' }}><span>vòng {r.it}</span><span>{r.tok}</span></div>
+              <div style={{ height: 4, borderRadius: 2, background: 'var(--track)', overflow: 'hidden', margin: '7px 0 0 15px' }}><div style={{ height: '100%', width: r.w, borderRadius: 2, background: 'var(--acc)' }} /></div>
+            </div>
+          ))}
+          <div style={{ fontSize: 11.5, color: 'var(--faint)', marginTop: 10 }}>Checkpoint mỗi vòng — kill giữa chừng vẫn resume được.</div>
+        </Card>
+        <Card title="Subagent">
+          {[{ img: '../../assets/planet-blue.svg', n: 'researcher', d: 'Tìm & đọc nguồn, tổng hợp có trích dẫn.', t: ['web_fetch', 'read_file'] }, { img: '../../assets/planet-green.svg', n: 'writer', d: 'Viết content theo template workspace.', t: ['read_file', 'write_file'] }].map((s) => (
+            <div key={s.n} style={{ display: 'flex', gap: 11, padding: '10px 0', borderBottom: '1px solid var(--hair)' }}>
+              <img src={s.img} width="32" height="32" style={{ borderRadius: '50%' }} alt="" />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>{s.n}</div>
+                <div style={{ fontSize: 11.5, color: 'var(--mut)', margin: '2px 0 5px' }}>{s.d}</div>
+                <div style={{ display: 'flex', gap: 5 }}>{s.t.map((t) => <Tag key={t}>{t}</Tag>)}</div>
+              </div>
+              <span style={{ fontSize: 10.5, color: 'var(--faint)', textAlign: 'right' }}>10 vòng<br />50k token</span>
+            </div>
+          ))}
+          <div style={{ fontSize: 11.5, color: 'var(--faint)', marginTop: 10 }}>Toolset con ⊆ toolset cha — không leo thang quyền.</div>
+        </Card>
+      </div>
+      <Card title="Job theo lịch">
+        <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.1fr 1fr 1.2fr 110px', gap: 10, padding: '7px 0', fontSize: 10.5, letterSpacing: '0.07em', color: 'var(--faint)', textTransform: 'uppercase', fontWeight: 600, borderBottom: '1px solid var(--line)' }}>
+          <div>Job</div><div>Spec</div><div>Chạy kế tiếp</div><div>Lần trước</div><div>Trạng thái</div>
+        </div>
+        {cron.map((j) => (
+          <div key={j.id} style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.1fr 1fr 1.2fr 110px', gap: 10, padding: '11px 0', borderBottom: '1px solid var(--hair)', fontSize: 12.5, alignItems: 'center' }}>
+            <div style={{ fontWeight: 600, color: 'var(--ink)' }}>{j.id}</div>
+            <div style={{ fontFamily: 'var(--font-mono)', color: 'var(--sub)', fontSize: 11.5 }}>{j.spec}</div>
+            <div>{j.next}</div>
+            <div style={{ color: 'var(--mut)' }}>{j.last}</div>
+            <Badge status={j.s}>{j.st}</Badge>
+          </div>
+        ))}
+      </Card>
+    </div>
+  );
+}
+
+function ProjectsScreen() {
+  const rows = [
+    { n: 'go-learn', p: '/mnt/d/work/go-learn', pct: '72%', wip: 'Refactor auth middleware — checkpoint vòng 4/8, resume được.' },
+    { n: 'crm-uat', p: '/mnt/d/work/crm-uat', pct: '45%', wip: 'Điều tra timeout /orders — chờ duyệt ssh_exec đọc log uat-01.' },
+    { n: 'landing-site', p: '/mnt/c/Users/ban/source/landing', pct: '90%', wip: 'Không có việc dở — sạch.' },
+  ];
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px 40px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {rows.map((r) => (
+        <Card key={r.n}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 13 }}>
+            <div style={{ width: 40, height: 40, borderRadius: 10, background: 'var(--wash)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 600, color: 'var(--sub)' }}>{r.n.slice(0, 2).toUpperCase()}</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{r.n}</div>
+              <div style={{ fontSize: 11.5, color: 'var(--faint)', fontFamily: 'var(--font-mono)' }}>{r.p}</div>
+            </div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--ink)' }}>{r.pct}</div>
+          </div>
+          <div style={{ height: 5, borderRadius: 3, background: 'var(--track)', overflow: 'hidden', margin: '13px 0 9px' }}><div style={{ height: '100%', width: r.pct, borderRadius: 3, background: '#3E3E35' }} /></div>
+          <div style={{ fontSize: 12.5, color: 'var(--sub)' }}>{r.wip}</div>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+function CredsScreen() {
+  const rows = [
+    { n: 'llm_key', src: 'env · YETT_SECRET_LLM_KEY', by: 'provider minimax', ok: true },
+    { n: 'llm_key_2', src: 'env · YETT_SECRET_LLM_KEY_2', by: 'fallback glm', ok: true },
+    { n: 'uat_dsn', src: 'env · YETT_SECRET_UAT_DSN', by: 'db_query — profile uat', ok: true },
+    { n: 'ssh_uat01', src: 'keyfile qua secret store', by: 'ssh_exec — host uat-01', ok: false },
+    { n: 'vpn_fortinet', src: 'env · YETT_SECRET_VPN_FORTINET', by: 'vpn fortinet-hn', ok: false },
+    { n: 'search_key', src: 'env · YETT_SECRET_SEARCH_KEY', by: 'web_search', ok: true },
+  ];
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px 40px' }}>
+      <Card style={{ marginBottom: 14 }}>
+        <div style={{ fontSize: 12.5, color: 'var(--sub)', lineHeight: 1.5 }}>Giá trị secret <b style={{ color: 'var(--ink)' }}>không bao giờ</b> vào context của model, span, log hay checkpoint. UI chỉ hiển thị <b style={{ color: 'var(--ink)' }}>tên</b> secret.</div>
+      </Card>
+      <Card>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr 1fr 110px', gap: 10, padding: '7px 0', fontSize: 10.5, letterSpacing: '0.07em', color: 'var(--faint)', textTransform: 'uppercase', fontWeight: 600, borderBottom: '1px solid var(--line)' }}>
+          <div>Secret</div><div>Nguồn</div><div>Dùng bởi</div><div>Trạng thái</div>
+        </div>
+        {rows.map((c) => (
+          <div key={c.n} style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr 1fr 110px', gap: 10, padding: '12px 0', borderBottom: '1px solid var(--hair)', fontSize: 12.5, alignItems: 'center' }}>
+            <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--ink)' }}>{c.n}</div>
+            <div style={{ fontFamily: 'var(--font-mono)', color: 'var(--mut)', fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.src}</div>
+            <div>{c.by}</div>
+            <Badge status={c.ok ? 'ok' : 'danger'}>{c.ok ? 'đã đặt' : 'thiếu'}</Badge>
+          </div>
+        ))}
+      </Card>
+    </div>
+  );
+}
+
+function ConfigScreen() {
+  const [note, setNote] = React.useState('');
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px 40px', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginBottom: 14 }}>
+        {['provider: minimax', 'sandbox: docker · no network', 'approval: manual', 'tz: Asia/Ho_Chi_Minh'].map((t) => <Tag key={t} pill>{t}</Tag>)}
+      </div>
+      <Card style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+        <div style={{ fontSize: 12, color: 'var(--faint)', fontFamily: 'var(--font-mono)', marginBottom: 10 }}>config/harness.yaml</div>
+        <textarea defaultValue={'provider:\n  name: minimax\n  model: MiniMax-M3\n  api_key_secret: llm_key\n\nsandbox:\n  backend: docker\n  network: none\n\nsecurity:\n  approval_mode: manual\n  approval_timeout_sec: 300'} spellCheck={false} style={{ flex: 1, minHeight: 320, resize: 'vertical', background: 'var(--side)', color: 'var(--body)', border: 0, boxShadow: 'inset 0 0 0 1px var(--line)', borderRadius: 8, padding: 14, fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.6 }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 12 }}>
+          <Button onClick={() => setNote('✓ Đã validate & lưu. Khởi động lại yett để áp dụng.')}>Lưu cấu hình · Save</Button>
+          <span style={{ fontSize: 12.5, color: 'var(--acc)' }}>{note}</span>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function ChatScreen() {
+  const [msgs, setMsgs] = React.useState([
+    { me: true, t: 'báo cáo tiến độ tuần này của các project' },
+    { me: false, t: 'Tuần này 3 project có hoạt động: go-learn (12 commit, refactor auth dở vòng 4/8), crm-uat (chờ duyệt ssh_exec), landing-site (không đổi 3 ngày). Chi phí tuần: $4.31.' },
+  ]);
+  const [draft, setDraft] = React.useState('');
+  const send = () => {
+    const t = draft.trim();
+    if (!t) return;
+    setMsgs((m) => [...m, { me: true, t }, { me: false, t: 'Đã nhận — đây là prototype; bản thật gọi POST /api/chat.' }]);
+    setDraft('');
+  };
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {msgs.map((m, i) => (
+          <div key={i} style={{ maxWidth: 620, alignSelf: m.me ? 'flex-end' : 'flex-start', background: m.me ? 'var(--ink)' : 'var(--card)', border: m.me ? 0 : '1px solid var(--line)', color: m.me ? '#fff' : 'var(--body)', padding: '11px 15px', borderRadius: 14, fontSize: 13.5, lineHeight: 1.6 }}>{m.t}</div>
+        ))}
+      </div>
+      <div style={{ flexShrink: 0, padding: '14px 24px 18px', borderTop: '1px solid var(--line)', background: 'var(--side)', display: 'flex', gap: 10 }}>
+        <Input value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); send(); } }} placeholder="Nhập tin nhắn…" style={{ flex: 1 }} />
+        <Button onClick={send}>Gửi</Button>
+      </div>
+    </div>
+  );
+}
+
+const TITLES = { overview: ['Tổng quan', 'Overview'], agents: ['Agent', 'Runs · subagents · scheduler'], projects: ['Project', 'Progress & work in flight'], creds: ['Credential', 'Secret store'], config: ['Cấu hình', 'harness.yaml'], chat: ['Chat', 'Talk to your agent'] };
+
+function App() {
+  const [apr, setApr] = React.useState(null);
+  const [layout, setLayout] = React.useState('orbit');
+  const [screen, setScreen] = React.useState('overview');
+  return (
+    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
+      <Sidebar apr={apr} screen={screen} setScreen={setScreen} />
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+        <div style={{ height: 58, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 10, padding: '0 24px', borderBottom: '1px solid var(--line)', background: 'var(--side)' }}>
+          <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: '-0.01em', color: 'var(--ink)' }}>{TITLES[screen][0]}</div>
+          <div style={{ fontSize: 12, color: 'var(--faint)' }}>{TITLES[screen][1]}</div>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 13px', borderRadius: 99, background: 'var(--card)', border: '1px solid var(--line)', fontSize: 12.5, color: 'var(--sub)' }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--acc)', animation: 'pulseDot 2.4s ease-in-out infinite' }} />minimax · MiniMax-M3
+            </span>
+            <span style={{ padding: '5px 13px', borderRadius: 99, background: 'var(--card)', border: '1px solid var(--line)', fontSize: 12.5, color: 'var(--sub)' }}>$18.72 <span style={{ color: 'var(--faint)' }}>/ $50</span></span>
+          </div>
+        </div>
+        {screen === 'agents' ? <AgentsScreen apr={apr} setApr={setApr} /> : null}
+        {screen === 'projects' ? <ProjectsScreen /> : null}
+        {screen === 'creds' ? <CredsScreen /> : null}
+        {screen === 'config' ? <ConfigScreen /> : null}
+        {screen === 'chat' ? <ChatScreen /> : null}
+        {screen === 'overview' ? <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px 40px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+            <span style={{ fontSize: 12, color: 'var(--mut)' }}>Bố cục · Layout</span>
+            <Tabs items={[{ value: 'cards', label: 'A · Thẻ' }, { value: 'orbit', label: 'B · Quỹ đạo' }, { value: 'table', label: 'C · Bảng' }]} value={layout} onChange={setLayout} />
+          </div>
+          <div style={{ marginBottom: 16 }}>
+            <ApprovalBanner tool="ssh_exec" host="uat-01" command="bash /opt/deploy/uat-deploy.sh go-learn" decided={apr} onApprove={() => setApr('ok')} onDeny={() => setApr('no')} />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.5fr) minmax(0,1fr)', gap: 12 }}>
+            <OrbitStage />
+            <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <Card>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                  <img src="../../assets/planet-magician.svg" width="30" height="30" style={{ borderRadius: '50%' }} alt="" />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--ink)' }}>main</div>
+                    <div style={{ fontSize: 11.5, color: 'var(--mut)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>"báo cáo tiến độ tuần này của các project"</div>
+                  </div>
+                  <Badge status="running" pulse>đang chạy</Badge>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5, color: 'var(--mut)', marginBottom: 6 }}>
+                  <span>vòng 6/20 · Tool: read_file</span><span style={{ fontFamily: 'var(--font-mono)' }}>7f3a91c2</span>
+                </div>
+                <div style={{ height: 5, borderRadius: 3, background: 'var(--track)', overflow: 'hidden' }}><div style={{ height: '100%', width: '30%', borderRadius: 3, background: 'var(--acc)' }} /></div>
+                <div style={{ display: 'flex', gap: 14, marginTop: 9, fontSize: 11.5, color: 'var(--mut)' }}><span>41k / 120k token</span><span style={{ fontFamily: 'var(--font-mono)' }}>$0.0421</span></div>
+              </Card>
+              <Card title="Subagent">
+                {[{ img: '../../assets/planet-blue.svg', n: 'researcher', d: 'Tìm & đọc nguồn, tổng hợp có trích dẫn.' }, { img: '../../assets/planet-green.svg', n: 'writer', d: 'Viết content theo template workspace.' }].map((s) => (
+                  <div key={s.n} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', borderBottom: '1px solid var(--hair)' }}>
+                    <img src={s.img} width="24" height="24" style={{ borderRadius: '50%' }} alt="" />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--ink)' }}>{s.n}</div>
+                      <div style={{ fontSize: 11, color: 'var(--faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.d}</div>
+                    </div>
+                    <span style={{ fontSize: 10.5, color: 'var(--faint)' }}>10 vòng · 50k tok</span>
+                  </div>
+                ))}
+              </Card>
+              <Card title="Kế tiếp" style={{ flex: 1 }}>
+                {[{ id: 'db-health', t: '17:00', s: 'running' }, { id: 'weekly-report', t: 'T2 08:00', s: 'idle' }, { id: 'backup-check', t: '23:30', s: 'danger' }].map((j) => (
+                  <div key={j.id} style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '6px 0', borderBottom: '1px solid var(--hair)', fontSize: 12.5 }}>
+                    <Badge status={j.s} />
+                    <span style={{ fontWeight: 500, color: 'var(--ink)', flex: 1 }}>{j.id}</span>
+                    <span style={{ color: 'var(--faint)', fontFamily: 'var(--font-mono)', fontSize: 11.5 }}>{j.t}</span>
+                  </div>
+                ))}
+              </Card>
+            </div>
+          </div>
+        </div> : null}
+      </div>
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+}).catch((e) => {
+  console.error('yett UI kit mount failed:', e && (e.stack || e));
+  document.getElementById('root').innerHTML = '<div style="padding:24px;font:13px ui-monospace,monospace;color:#B4442F">Mount failed — xem console.</div>';
+});
+</script></body></html>

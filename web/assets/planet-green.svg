@@ -1,0 +1,13 @@
+<!-- ponytail: vector sphere stand-in for the design's raster planet-green.png. Swap in the PNG if exact art is needed. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120">
+  <defs>
+    <radialGradient id="g" cx="38%" cy="32%" r="75%">
+      <stop offset="0%" stop-color="#8FD9AE"/>
+      <stop offset="45%" stop-color="#2E8B57"/>
+      <stop offset="100%" stop-color="#1B5E3C"/>
+    </radialGradient>
+  </defs>
+  <circle cx="60" cy="60" r="58" fill="url(#g)"/>
+  <ellipse cx="44" cy="40" rx="20" ry="12" fill="#fff" opacity="0.22"/>
+  <circle cx="80" cy="76" r="11" fill="#1B5E3C" opacity="0.35"/>
+</svg>
