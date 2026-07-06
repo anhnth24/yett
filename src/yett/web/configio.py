@@ -13,6 +13,25 @@ from yett.config.models import HarnessCfg
 _REDACT_MARKER = "[REDACTED]"
 _KV_RE = re.compile(r"^(\s*)([A-Za-z0-9_.-]+):[ \t]*(.*?)\s*$")
 
+# Field inline chứa secret THẬT (che theo TÊN field, không dựa vào định dạng value — vì
+# redactor theo pattern chỉ bắt sk-…, bỏ sót key GLM `id.secret` là provider mặc định).
+# Chỉ che `api_key` (inline key); `api_key_secret`/`dsn_secret` là TÊN tham chiếu, không phải value.
+_SECRET_FIELDS = frozenset({"api_key"})
+
+
+def _redact_secret_fields(text: str) -> str:
+    """Che value của field secret inline theo tên field. Bỏ qua dòng comment và value rỗng.
+    Ghi ra dạng `key: "[REDACTED]"` để `_restore_redacted_secrets` khôi phục khi lưu."""
+    out: list[str] = []
+    for line in text.splitlines():
+        m = _KV_RE.match(line)
+        if m and m.group(2) in _SECRET_FIELDS and m.group(3) and not m.group(3).startswith("#"):
+            out.append(f'{m.group(1)}{m.group(2)}: "{_REDACT_MARKER}"')
+        else:
+            out.append(line)
+    joined = "\n".join(out)
+    return joined + "\n" if text.endswith("\n") else joined
+
 
 def read_config_text(path: str | Path) -> str:
     p = Path(path)
@@ -30,7 +49,9 @@ def read_config_text_redacted(path: str | Path) -> str:
     """
     from yett.security.filters import redact
 
-    return redact(read_config_text(path))
+    # Hai lớp: (1) che theo TÊN field secret inline (bắt mọi định dạng key, kể cả GLM),
+    # (2) redactor pattern Phase 5 (bắt sk-…/PEM/DSN password lọt ở chỗ khác).
+    return redact(_redact_secret_fields(read_config_text(path)))
 
 
 def _restore_redacted_secrets(original_text: str, submitted_text: str) -> str:

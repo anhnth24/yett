@@ -79,6 +79,36 @@ def test_config_save_redacted_preserves_secret(tmp_path: Path) -> None:
     assert real_key in p.read_text(encoding="utf-8")  # key thật được khôi phục
 
 
+def test_config_redacts_nonpattern_api_key_by_field(tmp_path: Path) -> None:
+    """Key GLM dạng `id.secret` (KHÔNG có prefix sk-) không khớp pattern redactor → phải
+    được che theo TÊN field `api_key`. Bảo vệ đúng provider mặc định của yett."""
+    glm_key = "a1b2c3d4e5f6g7h8.i9j0k1l2m3n4o5p6"
+    p = tmp_path / "harness.yaml"
+    p.write_text(
+        f'provider:\n  name: glm\n  model: glm-5.2\n  api_key: "{glm_key}"\n'
+        "workspace_root: ./workspace\n",
+        encoding="utf-8",
+    )
+    redacted = read_config_text_redacted(p)
+    assert glm_key not in redacted  # không lộ ra trình duyệt
+    assert "[REDACTED]" in redacted
+    # api_key_secret (TÊN, không phải value) KHÔNG bị che
+    assert write_config_text(p, redacted) is None
+    assert glm_key in p.read_text(encoding="utf-8")  # lưu lại vẫn giữ key thật
+
+
+def test_config_does_not_redact_secret_name_fields(tmp_path: Path) -> None:
+    """`api_key_secret` là TÊN tham chiếu (không phải value) → KHÔNG bị che."""
+    p = tmp_path / "harness.yaml"
+    p.write_text(
+        "provider:\n  name: glm\n  model: glm-5.2\n  api_key_secret: llm_key\n"
+        "workspace_root: ./workspace\n",
+        encoding="utf-8",
+    )
+    redacted = read_config_text_redacted(p)
+    assert "llm_key" in redacted  # tên secret vẫn hiện để người dùng biết tham chiếu gì
+
+
 def test_config_save_can_change_secret(tmp_path: Path) -> None:
     """Người dùng gõ key mới (không có marker) vẫn ghi đè bình thường."""
     p = tmp_path / "harness.yaml"
