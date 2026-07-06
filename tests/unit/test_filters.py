@@ -135,6 +135,18 @@ def test_redact_attrs_recursive_nested_dict_and_list() -> None:
     assert "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789" not in out["meta"]["keys"][0]
 
 
+def test_redact_generic_sk_key_with_underscore_and_dot() -> None:
+    """[M2] Key provider dùng '_'/'.' trong thân (vd sk-cp-..._..., sk-proj-....) — pattern cũ
+    `[A-Za-z0-9-]` đứt ở '_'/'.' làm key < sàn 20 ký tự → KHÔNG redact → lộ (codex review)."""
+    for key in (
+        "sk-cp-AAAAAAAA_BBBBBBBBBBBBBBBBBBBBBBBB",
+        "sk-proj-AAAAAAAA.BBBBBBBBBBBBBBBBBBBBBBBB",
+    ):
+        out = filters.redact(f"token={key} end")
+        assert key not in out, key
+        assert "[REDACTED]" in out
+
+
 def test_redact_odbc_password_quoted_and_braced() -> None:
     """[M4] Giá trị Pwd có quote/braces (ODBC cho phép ';' bên trong) phải redact TRỌN,
     không chỉ tới dấu ';' đầu tiên (bare-value pattern cũ để lọt phần sau)."""

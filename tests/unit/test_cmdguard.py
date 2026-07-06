@@ -106,6 +106,22 @@ def test_restart_not_readonly() -> None:
     assert dec.verdict == "deny"
 
 
+@pytest.mark.parametrize("cmd", [
+    "journalctl --vacuum-time=1s",
+    "journalctl --vacuum-size=1M",
+    "journalctl --rotate",
+    "journalctl --flush",
+    "journalctl --sync",
+])
+def test_journalctl_mutating_flags_not_readonly(cmd: str) -> None:
+    # [M1 codex review] journalctl đọc log là readonly, NHƯNG --vacuum-*/--rotate/--flush
+    # XOÁ/xoay dữ liệu log → không được coi readonly → default deny (không allow).
+    dec = gate_ssh(cmd)
+    assert dec.verdict == "deny", f"journalctl mutating lọt readonly: {cmd} -> {dec.verdict}"
+    # journalctl đọc thường vẫn readonly (không regress)
+    assert gate_ssh("journalctl -u app.service --no-pager").verdict == "allow"
+
+
 def test_unparseable_is_delete_failclosed() -> None:
     # quote không đóng → shlex lỗi → fail-closed (coi như delete)
     cls, _ = classify('rm "unterminated')

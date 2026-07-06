@@ -124,23 +124,32 @@ def test_immutable_protects_policy_file_via_exec_relative_path(tmp_path: Path) -
     assert dec3.verdict == "allow"
 
 
-def test_immutable_exec_hits_protected_strips_redirect_operators() -> None:
-    # [H1] redirect dính operand (`>policy.yaml`, `>>policy.yaml`, `2>policy.yaml`) trước đây
-    # lọt vì shlex giữ `>policy.yaml` là 1 token, basename '>policy.yaml' không khớp. Test lớp
-    # _exec_hits_protected trực tiếp (check() còn bắt redirect qua DELETE_FILE hardline nữa).
+def test_immutable_exec_hits_protected_covers_bypass_forms() -> None:
+    # [H1 + codex review] Quét substring fail-closed phải bắt MỌI dạng exec chạm tên protected:
+    # redirect dính (kể cả `>|` clobber), interpreter inline, shell lồng, child của protected dir.
     core = ImmutableCore([Path("policy.yaml")])
-    for cmd in ("echo x >policy.yaml", "echo x >>policy.yaml", "echo x 2>policy.yaml"):
+    hits = [
+        "sed -i policy.yaml",                                  # operand thường
+        "echo x >policy.yaml",                                 # redirect dính
+        "echo x >>policy.yaml",                                # append
+        "echo x 2>policy.yaml",                                # fd-prefix
+        "cat /tmp/p >|policy.yaml",                            # clobber `>|` (codex H1)
+        "python -c \"open('policy.yaml','w').write('x')\"",   # interpreter inline (codex H1)
+        "sh -c \"sed -i s/a/b/ policy.yaml\"",                # shell lồng (codex H1)
+    ]
+    for cmd in hits:
         assert core._exec_hits_protected(cmd) is True, cmd
+    # không chạm tên protected → không false-deny
     assert core._exec_hits_protected("echo x >other.txt") is False
+    assert core._exec_hits_protected("python -c \"print(1)\"") is False
 
 
 def test_immutable_exec_hits_protected_matches_child_of_protected_dir() -> None:
-    # [H1] ghi vào CON của thư mục protected qua path tuyệt đối — basename-only cũ bỏ sót
-    # (basename 'child.yaml' ≠ tên dir 'protdir'); nay so khớp mọi thành phần path (POSIX).
+    # [H1] ghi vào CON của thư mục protected — tên dir 'protdir' xuất hiện trong lệnh → deny.
     core = ImmutableCore([Path("/srv/protdir")])  # .name == 'protdir'
     assert core._exec_hits_protected("sed -i /srv/protdir/child.yaml") is True
     assert core._exec_hits_protected("cat /srv/protdir/nested/deep.yaml") is True
-    # path ngoài protected có basename khác → không false-deny
+    # path ngoài protected (không chứa 'protdir') → không false-deny
     assert core._exec_hits_protected("sed -i /tmp/child.yaml") is False
 
 

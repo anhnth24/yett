@@ -6,8 +6,6 @@ chạm ghi vào vùng immutable (policy file, identity file). Subagent kế th�
 
 from __future__ import annotations
 
-import re
-import shlex
 from pathlib import Path
 
 from yett.security import denylist
@@ -19,27 +17,18 @@ from yett.tools.db.sqlguard import classify_sql
 # profile (args ở lớp này là raw args từ model, chưa resolve qua db_query.py).
 _SQL_DIALECTS = ("postgres", "mysql", "tsql", "sqlite")
 
-# Tiền tố redirect ở đầu 1 token shlex: `>f`, `>>f`, `2>f`, `1>>f`, `<f` — tách ra để lấy
-# operand path thật (nếu không, `>policy.yaml` là 1 token, basename `>policy.yaml` không khớp).
-_REDIRECT_PREFIX = re.compile(r"^\d*[<>]+")
-
 _IMMUTABLE_WRITE = Decision(
     "deny", "HARDLINE: không được sửa policy/identity (immutable core)", "IMMUTABLE_WRITE",
 )
 
 
-def _basename(token: str) -> str:
-    """Basename thuần chuỗi, chấp cả '/' (POSIX/remote) và '\\\\' (Windows local) làm
-    separator — token đến từ shlex-parse một command line, không phải path đã biết OS nào."""
-    return token.replace("\\", "/").rsplit("/", 1)[-1]
-
-
 class ImmutableCore:
     def __init__(self, protected_paths: list[Path] | None = None) -> None:
         self._protected = [p.resolve() for p in (protected_paths or [])]
-        # [P1-8/RT-4] fail-closed fallback cho exec/ssh_exec: không biết cwd thật (local hay
-        # remote qua SSH) nên không thể canonicalize path tương đối như write_file — so khớp
-        # basename thay vì bỏ qua hoàn toàn.
+        # [P1-8/RT-4/H1] Tên (basename) các vùng protected — dùng quét substring trong chuỗi
+        # lệnh exec/ssh_exec (không biết cwd thật local/remote, và command có thể lách qua
+        # redirect/interpreter/shell-lồng nên không bóc tách operand đáng tin). Xem
+        # `_exec_hits_protected`.
         self._protected_names = {p.name for p in self._protected}
 
     def check(self, tool: str, args: dict) -> Decision | None:
@@ -84,37 +73,18 @@ class ImmutableCore:
         return False
 
     def _exec_hits_protected(self, cmd: str) -> bool:
-        """[P1-8/RT-4] exec/ssh_exec: target là CẢ CÂU LỆNH (vd `sed -i policy.yaml`), KHÔNG
-        phải 1 path — `Path(cmd).resolve()` vô nghĩa và `is_relative_to` không bắt được (còn
-        tệ hơn substring cho path tuyệt đối, vì nó không bắt được gì cả). Sửa: shlex-parse
-        lệnh, lấy từng operand (bỏ tên lệnh ở vị trí 0 và các cờ bắt đầu bằng '-'), so khớp
-        BASENAME với tên file protected — fail-closed đơn giản (không cần biết cwd thật, có
-        thể là local hay remote qua SSH) như kiến trúc phase đã chấp nhận. Không parse được
-        (shlex lỗi, vd quote không khớp) → fail-closed, coi là chạm.
-
-        Giới hạn đã biết (không phải bug, ghi nhận rõ): lệnh lồng nested shell qua `sh -c "..."`
-        không được đệ quy bóc tách — token `-c "..."` là 1 chuỗi duy nhất với shlex ở tầng
-        ngoài, basename của cả chuỗi đó hiếm khi trùng tên file protected. Ngoài phạm vi P1-8.
-        """
+        """[P1-8/RT-4/H1] exec/ssh_exec: target là CẢ CÂU LỆNH, không phải 1 path. KHÔNG thể tin
+        cậy bóc tách operand vì có quá nhiều dạng lách: redirect dính (`>f`, `2>>f`, `>|f`
+        clobber), interpreter inline (`python -c "open('cfg','w')"`), shell lồng (`sh -c "..."`),
+        quoting/`$()`. Vì vậy fail-closed đơn giản & bao trùm: nếu TÊN của bất kỳ vùng protected
+        xuất hiện ở BẤT KỲ đâu trong chuỗi lệnh → DENY. Đây là hàng rào cứng defense-in-depth;
+        containment THẬT đến từ Docker (rootfs read-only + file config nằm NGOÀI mount ghi được).
+        Đánh đổi đã biết: có thể over-deny lệnh CHỈ đọc config (vd `cat harness.yaml`) — chấp
+        nhận, vì lớp này là hardline chứ không phải bộ lọc chính xác (write_file mới dùng
+        resolve()+is_relative_to chính xác, xem `_write_file_hits_protected`)."""
         if not cmd or not self._protected_names:
             return False
-        try:
-            tokens = shlex.split(cmd)
-        except ValueError:
-            return True  # không parse được lệnh → fail-closed
-        for i, tok in enumerate(tokens):
-            if i == 0 or tok.startswith("-"):
-                continue  # tên lệnh + cờ không phải operand path
-            operand = _REDIRECT_PREFIX.sub("", tok)  # [H1] bóc `>`/`2>>`/`<` dính đầu operand
-            if not operand:
-                continue
-            # [H1] So khớp MỌI thành phần path, không chỉ basename: bắt cả `>policy.yaml`
-            # (sau khi bóc redirect) LẪN con của thư mục protected (`/protdir/child.yaml` khi
-            # `protdir` được bảo vệ). Bỏ qua '.'/'..' — fail-closed, không phụ thuộc OS/cwd.
-            parts = [p for p in operand.replace("\\", "/").split("/") if p and p not in (".", "..")]
-            if any(p in self._protected_names for p in parts):
-                return True
-        return False
+        return any(name in cmd for name in self._protected_names)
 
     @staticmethod
     def _classify_db_query(sql: str, driver: object) -> Decision:

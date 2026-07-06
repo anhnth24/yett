@@ -43,6 +43,14 @@ _READONLY_SUBCMD = {
     "docker": {"ps", "logs", "images", "inspect", "stats", "top", "version", "info"},
     "kubectl": {"get", "describe", "logs", "top", "version", "explain"},
 }
+# Bin readonly-theo-mặc-định NHƯNG có cờ ghi/xoá dữ liệu → không còn readonly khi cờ đó xuất
+# hiện. journalctl đọc log là readonly, nhưng `--vacuum-*`/`--rotate`/`--flush` XOÁ/xoay log.
+_MUTATING_FLAGS = {
+    "journalctl": (
+        "--rotate", "--flush", "--sync", "--relinquish-var", "--smart-relinquish-var",
+        "--update-catalog", "--setup-keys", "--vacuum-time", "--vacuum-size", "--vacuum-files",
+    ),
+}
 
 
 class CmdClass(Enum):
@@ -188,6 +196,11 @@ def _is_readonly(cmd: str) -> bool:
         if sub is not None:
             if len(tokens) < 2 or tokens[1] not in sub:
                 return False
+        muts = _MUTATING_FLAGS.get(head)
+        if muts is not None:
+            for tok in tokens[1:]:
+                if any(tok == m or tok.startswith(m + "=") for m in muts):
+                    return False  # cờ ghi/xoá → không phải readonly (vd journalctl --vacuum-time=1s)
     return True
 
 

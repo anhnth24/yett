@@ -15,10 +15,12 @@ from yett.tools.base import ToolResult
 _SECRET_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
     ("aws_key", re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED]"),
     ("anthropic_key", re.compile(r"sk-ant-[A-Za-z0-9\-_]{20,}"), "[REDACTED]"),
-    # [RT-6/19] generic: khớp mọi key dạng sk-<provider->...  (vd sk-proj-, sk-cp-
+    # [RT-6/19][M2] generic: khớp mọi key dạng sk-<provider->...  (vd sk-proj-, sk-cp-
     # — format key MiniMax đã lộ/rotate). `\b` trước "sk-" tránh khớp giữa từ
-    # (vd "desk-top-..."); sàn 20 ký tự sau "sk-" tránh khớp cụm ngắn vô hại.
-    ("generic_sk_key", re.compile(r"\bsk-[A-Za-z0-9-]{20,}\b"), "[REDACTED]"),
+    # (vd "desk-top-..."); sàn 20 ký tự sau "sk-" tránh khớp cụm ngắn vô hại. Alphabet gồm cả
+    # '_' và '.' vì key provider thật dùng chúng (vd `sk-cp-...._....`) — pattern cũ chỉ
+    # `[A-Za-z0-9-]` đứt ở '_'/'.' làm key lọt (M2 từ codex review).
+    ("generic_sk_key", re.compile(r"\bsk-[A-Za-z0-9._-]{20,}"), "[REDACTED]"),
     ("bearer", re.compile(r"(?i)bearer\s+[A-Za-z0-9\-._~+/]{20,}"), "[REDACTED]"),
     ("pw_in_dsn", re.compile(r"(?i)(://[^:/@\s]+:)[^@/\s]+(@)"), r"\1[REDACTED]\2"),
     # ODBC/ADO DSN: `Pwd=...;` / `Password=...;` — giữ tên key, redact giá trị. Giá trị có thể
