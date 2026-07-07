@@ -219,10 +219,14 @@ async function openTrace(id){
 }
 
 // ---- scheduler helpers ----
-function fmtTs(t){ if(!t) return '—'; try{ return new Date(t*1000).toLocaleString('vi-VN',
-  {hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'}); }catch(e){ return String(t); } }
-function jrow(jb){ return '<tr><td class="v">'+esc(jb.id)+(jb.running?' '+badge('running'):'')+'</td>'+
-  '<td class="mono">'+esc(jb.spec)+'</td><td>'+fmtTs(jb.next_run)+'</td><td class="mono">'+fmtTs(jb.last_run)+
+// Render theo tz cấu hình (khớp spec người dùng gõ), KHÔNG theo tz trình duyệt — nếu không
+// job "0 9 * * *" (giờ Asia/Ho_Chi_Minh) sẽ hiện lệch trên máy đặt tz khác.
+function fmtTs(t, tz){ if(!t) return '—';
+  const opt={hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'};
+  if(tz){ try{ return new Date(t*1000).toLocaleString('vi-VN',{...opt,timeZone:tz}); }catch(e){} }
+  try{ return new Date(t*1000).toLocaleString('vi-VN',opt); }catch(e){ return String(t); } }
+function jrow(jb, tz){ return '<tr><td class="v">'+esc(jb.id)+(jb.running?' '+badge('running'):'')+'</td>'+
+  '<td class="mono">'+esc(jb.spec)+'</td><td>'+fmtTs(jb.next_run,tz)+'</td><td class="mono">'+fmtTs(jb.last_run,tz)+
   '</td><td style="text-align:right;white-space:nowrap"><button class="jbtn" data-run="'+esc(jb.id)+
   '">Chạy</button> <button class="jbtn" data-del="'+esc(jb.id)+'">Xóa</button></td></tr>'; }
 async function addJob(){ const id=$('jid').value.trim(), spec=$('jspec').value.trim(), prompt=$('jprompt').value.trim();
@@ -308,8 +312,8 @@ async function renderOverview(){
 }
 async function renderAgents(){
   view.innerHTML='<div class="empty">Đang tải…</div>';
-  const [sa,t,jb] = await Promise.all([j('/api/subagents'),j('/api/traces'),j('/api/jobs')]);
-  const subs=sa.subagents||[], tr=t.traces||[], jobs=jb.jobs||[];
+  const [sa,t,jb,m] = await Promise.all([j('/api/subagents'),j('/api/traces'),j('/api/jobs'),j('/api/meta')]);
+  const subs=sa.subagents||[], tr=t.traces||[], jobs=jb.jobs||[], tz=(m&&m.timezone)||null;
   let h='<div class="card"><div class="ct">Subagent</div>';
   if(!subs.length) h+=empty('Chưa có subagent def nào trong {workspace}/agents/*.md.');
   else h+=subs.map((s,i)=>{
@@ -333,7 +337,7 @@ async function renderAgents(){
     '<button class="send" id="jadd">Thêm</button></div>'+
     '<div id="jmsg" style="font-size:11.5px;color:var(--danger);min-height:15px;margin:6px 0 4px"></div>';
   h+= jobs.length
-    ? '<table class="tbl"><tr><th>Job</th><th>Spec</th><th>Kế tiếp</th><th>Lần trước</th><th></th></tr>'+jobs.map(jrow).join('')+'</table>'
+    ? '<table class="tbl"><tr><th>Job</th><th>Spec</th><th>Kế tiếp ('+esc(tz||'local')+')</th><th>Lần trước</th><th></th></tr>'+jobs.map(j=>jrow(j,tz)).join('')+'</table>'
     : empty('Chưa có job. Thêm ở trên (spec: at: / every: / cron:).');
   h+='</div>';
   view.innerHTML=h;

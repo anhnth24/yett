@@ -48,12 +48,15 @@ def _post(url: str, obj: dict) -> dict:
 
 def test_web_ui_health_chat_index(tmp_path: Path) -> None:
     app = _build_app(tmp_path)
-    httpd = serve(app, port=8791)
+    # port=0 → OS tự chọn cổng trống (tránh flaky trên Windows khi dải cổng bị WSL2/Hyper-V
+    # loại trừ -> WinError 10013); đọc cổng thật từ server_address.
+    httpd = serve(app, host="127.0.0.1", port=0)
+    port = httpd.server_address[1]
     th = threading.Thread(target=httpd.serve_forever, daemon=True)
     th.start()
     time.sleep(0.3)
     try:
-        base = "http://127.0.0.1:8791"
+        base = f"http://127.0.0.1:{port}"
         health = _get(f"{base}/api/health")
         assert health["ok"] and health["provider"] == "fake"
 

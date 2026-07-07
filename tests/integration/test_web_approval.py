@@ -29,7 +29,7 @@ def _post(url: str, obj: dict) -> dict:
     return json.loads(urllib.request.urlopen(req, timeout=10).read())
 
 
-def _run_with_decision(tmp_path: Path, port: int, approve: bool) -> dict:
+def _run_with_decision(tmp_path: Path, approve: bool) -> dict:
     (tmp_path / "ws").mkdir()
     # Pattern fullmatch (allowlist anchoring): "echo.*" khớp cả câu lệnh, không phải prefix
     # kiểu re.search cũ ("^echo" sẽ KHÔNG fullmatch "echo hi").
@@ -47,7 +47,10 @@ def _run_with_decision(tmp_path: Path, port: int, approve: bool) -> dict:
     app = App(provider=provider, cfg=cfg, state_dir=tmp_path / "st",
               secrets=InMemorySecretStore(), clock=_clock())
     center = ApprovalCenter(default_timeout=10.0)
-    httpd = serve(app, port=port, center=center)
+    # port=0 → OS tự chọn cổng trống (tránh flaky Windows WinError 10013 khi cổng cố định
+    # bị WSL2/Hyper-V loại trừ); đọc cổng thật từ server_address.
+    httpd = serve(app, host="127.0.0.1", port=0, center=center)
+    port = httpd.server_address[1]
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     time.sleep(0.3)
     base = f"http://127.0.0.1:{port}"
@@ -76,12 +79,12 @@ def _run_with_decision(tmp_path: Path, port: int, approve: bool) -> dict:
 
 
 def test_web_approval_approve(tmp_path: Path) -> None:
-    r = _run_with_decision(tmp_path, 8811, approve=True)
+    r = _run_with_decision(tmp_path, approve=True)
     assert r["status"] == "done"
     # tool đã chạy (approve) → span exec không phải denied; ở đây kiểm turn hoàn tất
     assert "Kết thúc" in r["text"]
 
 
 def test_web_approval_reject(tmp_path: Path) -> None:
-    r = _run_with_decision(tmp_path, 8812, approve=False)
+    r = _run_with_decision(tmp_path, approve=False)
     assert r["status"] == "done"  # turn vẫn hoàn tất, nhưng tool bị từ chối
