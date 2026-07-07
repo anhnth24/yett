@@ -102,6 +102,22 @@ class RemoteCfg(BaseModel):
     vpn_profiles: dict[str, dict] = Field(default_factory=dict)  # name -> {cred_secret: <tên>}
 
 
+class TelegramCfg(BaseModel):
+    """Kênh Telegram (spec P3 §4). Token là secret (không để plaintext); chỉ chat_id đã ghép
+    mới sai khiến được agent. Long-polling → không cần mở port vào máy."""
+
+    enabled: bool = False
+    token_secret: str = "tg_bot_token"     # TÊN secret, giá trị ở secret store/env
+    allowed_chat_ids: list[str] = Field(default_factory=list)  # ghép sẵn (bỏ pairing)
+    pairing_code: str = ""                  # gửi mã này cho bot để tự ghép; rỗng = tắt pairing
+    briefing_hour: int | None = None        # giờ (theo timezone) gửi briefing tự động; None = tắt
+    poll_timeout_sec: int = 25              # long-poll getUpdates
+
+
+class ChannelsCfg(BaseModel):
+    telegram: TelegramCfg = Field(default_factory=TelegramCfg)
+
+
 class HarnessCfg(BaseModel):
     provider: ProviderCfg
     fallback_provider: ProviderCfg | None = None
@@ -110,6 +126,7 @@ class HarnessCfg(BaseModel):
     projects: dict[str, ProjectCfg] = Field(default_factory=dict)
     databases: dict[str, DbProfileCfg] = Field(default_factory=dict)
     remote: RemoteCfg = Field(default_factory=RemoteCfg)
+    channels: ChannelsCfg = Field(default_factory=ChannelsCfg)
     search: SearchCfg | None = None
     egress: EgressCfg = Field(default_factory=EgressCfg)
     sandbox: SandboxCfg = Field(default_factory=SandboxCfg)

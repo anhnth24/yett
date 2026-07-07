@@ -32,6 +32,7 @@ from yett.tools.builtin.codenav import GrepTool, ListDirTool, SearchTool
 from yett.tools.builtin.exec import ExecTool
 from yett.tools.builtin.files import ReadFileTool, WriteFileTool
 from yett.tools.builtin.http_fetcher import SafeHttpFetcher
+from yett.tools.builtin.notify import NotifyTool
 from yett.tools.builtin.tasks import TaskAddTool, TaskListTool, TaskUpdateTool
 from yett.tools.builtin.web_fetch import WebFetchTool
 from yett.tools.projects import ProjectScope
@@ -171,6 +172,9 @@ class App:
         self.registry.register(TaskAddTool(self.tasks))
         self.registry.register(TaskListTool(self.tasks))
         self.registry.register(TaskUpdateTool(self.tasks))
+        # notify: kênh gắn muộn (serve_forever) qua set_notifier; getter để late-bind + hot-reload.
+        self._notifier: Callable[[str], int] | None = None
+        self.registry.register(NotifyTool(lambda: self._notifier))
         # [RT-7] fetcher=None (không inject, vd test) + có allowlist -> dựng fetcher SSRF-safe
         # thật (SafeHttpFetcher) thay vì để web_fetch không bao giờ được đăng ký trong runtime
         # thật. allowlist rỗng -> không đăng ký tool (sẽ luôn deny, không có ích).
@@ -303,6 +307,7 @@ class App:
             "load_skill": "nạp hướng dẫn skill", "delegate": "giao việc cho subagent",
             "task_add": "thêm việc/mục tiêu cần làm", "task_list": "xem việc cần làm",
             "task_update": "cập nhật/hoàn thành việc",
+            "notify": "đẩy thông báo cho người dùng qua Telegram",
         }
         lines = ["Bạn là yett — trợ lý DevOps cá nhân, fail-closed (mặc định từ chối, chặn trước khi chạy).",
                  "", "KHẢ NĂNG (tool đang bật):"]
@@ -397,6 +402,10 @@ class App:
     def set_approver(self, approver) -> None:
         """Gắn approver (vd web ApprovalCenter.request) — turn sẽ hỏi duyệt khi Gate cần."""
         self.loop._approver = approver
+
+    def set_notifier(self, notifier: Callable[[str], int] | None) -> None:
+        """Gắn kênh đẩy tin (vd TelegramChannel.notify) cho tool notify + briefing tự động."""
+        self._notifier = notifier
 
     def close(self) -> None:
         self.spanstore.close()

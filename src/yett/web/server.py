@@ -386,8 +386,65 @@ def _hot_swap(httpd, chat_lock, center, rebuild) -> None:
         httpd._app = new_app
         if center is not None:
             new_app.set_approver(center.request)
+        # Giữ kênh thông báo (Telegram) sau hot-reload: App mới cũng cần notifier.
+        notifier = getattr(httpd, "_notifier", None)
+        if notifier is not None:
+            new_app.set_notifier(notifier)
         if old is not None:
             old.close()
+
+
+def _start_telegram(httpd, app, lock, stop) -> None:
+    """Bật kênh Telegram nếu config enabled: dựng channel, gắn notifier, chạy thread poll +
+    (tùy chọn) thread briefing tự động. Token thiếu/không hợp lệ → cảnh báo, KHÔNG sập web."""
+    import sys
+
+    tg = app.cfg.channels.telegram
+    if not tg.enabled:
+        return
+    from yett.channels.gating import ChannelGate
+    from yett.channels.telegram import TelegramChannel, TelegramClient
+    from yett.errors import YettError
+
+    try:
+        token = app._secrets.get(tg.token_secret)
+    except (YettError, Exception) as e:  # noqa: BLE001 — token chưa đặt → tắt Telegram, web vẫn chạy
+        print(f"[yett] Telegram bật nhưng chưa lấy được token ({tg.token_secret}): {e} — bỏ qua.",
+              file=sys.stderr)
+        return
+    gate = ChannelGate(allowed_chat_ids=set(tg.allowed_chat_ids))
+    channel = TelegramChannel(
+        TelegramClient(token), gate,
+        get_app=lambda: getattr(httpd, "_app", app), chat_lock=lock,
+        pairing_code=tg.pairing_code, poll_timeout=tg.poll_timeout_sec,
+    )
+    httpd._notifier = channel.notify  # để hot-swap giữ notifier
+    app.set_notifier(channel.notify)
+    threading.Thread(target=channel.run, args=(stop,), daemon=True).start()
+    print(f"[yett] Telegram: bật (poll). Chat đã ghép: {len(gate.allowed_chat_ids)}.")
+    if tg.briefing_hour is not None:
+        threading.Thread(
+            target=_run_briefing, args=(httpd, lock, channel, tg.briefing_hour, app.cfg.timezone, stop),
+            daemon=True,
+        ).start()
+        print(f"[yett] Briefing tự động {tg.briefing_hour}h ({app.cfg.timezone}) → Telegram.")
+
+
+def _run_briefing(httpd, chat_lock, channel, hour, tz, stop) -> None:
+    """Mỗi phút kiểm: tới giờ briefing & chưa gửi hôm nay → gửi briefing App hiện tại qua kênh."""
+    from yett.channels.telegram import briefing_due, now_in_tz
+
+    last_sent: str | None = None
+    while not stop.wait(60.0):
+        now = now_in_tz(tz)
+        if not briefing_due(now, hour, last_sent):
+            continue
+        last_sent = now.strftime("%Y-%m-%d")
+        with chat_lock:
+            app = getattr(httpd, "_app", None)
+            text = app.briefing() if app is not None else None
+        if text:
+            channel.notify(text)
 
 
 def _watch_config(httpd, chat_lock, center, rebuild, config_path, stop) -> None:
@@ -425,6 +482,7 @@ def serve_forever(
     lock = httpd._chat_lock  # type: ignore[attr-defined]
     sched = threading.Thread(target=_run_scheduler, args=(httpd, lock, stop), daemon=True)
     sched.start()
+    _start_telegram(httpd, app, lock, stop)  # kênh Telegram + briefing tự động (nếu config bật)
     if config_path and rebuild is not None:
         # Watcher: sửa file config (trên host, kể cả mount :ro) → hot-reload live trong prod.
         threading.Thread(

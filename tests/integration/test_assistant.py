@@ -68,3 +68,70 @@ def test_capabilities_mentions_tasks(tmp_path: Path) -> None:
     assert "task_add" in cap and "task_list" in cap
     assert "TRỢ LÝ CÁ NHÂN" in cap
     app.close()
+
+
+def test_agent_notify_via_tool(tmp_path: Path) -> None:
+    (tmp_path / "ws").mkdir(parents=True)
+    sec = SecurityCfg(allowlist=[ToolRule(tool="notify", effect="allow")])
+    provider = FakeProvider([
+        tool_result("c1", "notify", {"text": "Deploy UAT xong."}),
+        text_result("Đã báo anh qua Telegram."),
+    ])
+    app = App(provider=provider, cfg=_cfg(tmp_path, security=sec), state_dir=tmp_path / "st",
+              secrets=InMemorySecretStore(), clock=_clock())
+    sent: list[str] = []
+    app.set_notifier(lambda text: (sent.append(text), 1)[1])  # giả kênh: đếm 1
+    res = asyncio.run(app.chat("deploy xong báo tôi"))
+    assert res.status == "done"
+    assert sent == ["Deploy UAT xong."]
+    app.close()
+
+
+def test_notify_without_channel_errors_gracefully(tmp_path: Path) -> None:
+    (tmp_path / "ws").mkdir(parents=True)
+    sec = SecurityCfg(allowlist=[ToolRule(tool="notify", effect="allow")])
+    provider = FakeProvider([
+        tool_result("c1", "notify", {"text": "hi"}),
+        text_result("Kênh chưa bật."),
+    ])
+    app = App(provider=provider, cfg=_cfg(tmp_path, security=sec), state_dir=tmp_path / "st",
+              secrets=InMemorySecretStore(), clock=_clock())
+    res = asyncio.run(app.chat("báo tôi"))  # notifier chưa set → tool trả lỗi, turn vẫn done
+    assert res.status == "done"
+    spans = app.spanstore.get_trace(res.trace_id)
+    assert any(s["name"] == "notify" for s in spans)
+    app.close()
+
+
+def test_telegram_dispatches_to_real_app(tmp_path: Path) -> None:
+    """Tin Telegram từ chat đã ghép → App.chat thật chạy → reply gửi lại (default run_chat)."""
+    import threading
+
+    from yett.channels.gating import ChannelGate
+    from yett.channels.telegram import TelegramChannel, TelegramClient
+
+    (tmp_path / "ws").mkdir(parents=True)
+    app = App(provider=FakeProvider([text_result("Chào anh, deploy đang chạy.")]),
+              cfg=_cfg(tmp_path), state_dir=tmp_path / "st",
+              secrets=InMemorySecretStore(), clock=_clock())
+
+    sent = []
+
+    def transport(url, params):
+        method = url.rsplit("/", 1)[-1]
+        if method == "getUpdates":
+            return {"ok": True, "result": [
+                {"update_id": 1, "message": {"chat": {"id": 555}, "text": "deploy tới đâu rồi?"}}
+            ]}
+        sent.append(params)
+        return {"ok": True}
+
+    ch = TelegramChannel(
+        TelegramClient("TOK", transport=transport),
+        ChannelGate(allowed_chat_ids={"555"}),
+        get_app=lambda: app, chat_lock=threading.Lock(),
+    )
+    ch.poll_once()  # dùng _default_run_chat → app.chat thật
+    assert sent and sent[-1]["chat_id"] == "555"
+    assert "deploy đang chạy" in sent[-1]["text"]
+    app.close()

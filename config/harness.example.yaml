@@ -84,6 +84,19 @@ projects:
 #     readonly: true
 # Nhớ thêm rule allowlist: { tool: db_query, effect: allow } ở mục security bên dưới.
 
+# ---- Kênh Telegram (nhắn tin với yett như trợ lý) ----
+# Token lấy từ @BotFather (/newbot). KHÔNG dán token vào đây — đặt qua secret:
+#   env:  export YETT_SECRET_TG_BOT_TOKEN="8123...JkLmNo"
+#   file: ghi secrets/tg_bot_token  (chmod 600)
+# Long-polling → KHÔNG cần mở port; chỉ cần outbound HTTPS + api.telegram.org trong egress.
+# channels:
+#   telegram:
+#     enabled: true
+#     token_secret: tg_bot_token       # TÊN secret, không phải token
+#     pairing_code: "yett-ghep-2026"   # gửi mã này cho bot để tự ghép (rỗng = tắt pairing)
+#     allowed_chat_ids: []             # hoặc điền sẵn chat_id đã biết
+#     briefing_hour: 8                 # gửi briefing tự động lúc 8h (theo timezone); bỏ = tắt
+
 # ---- Bật/tắt skills & subagents ----
 skills_enabled: true
 subagents_enabled: true
@@ -118,6 +131,7 @@ egress:
     - generativelanguage.googleapis.com  # Gemini
     - api.openai.com         # OpenAI
     - api.anthropic.com      # Anthropic
+    - api.telegram.org       # Kênh Telegram (nếu bật channels.telegram)
     # - github.com
 
 # ---- Security (Policy Gate) ----
@@ -146,6 +160,8 @@ security:
     - tool: task_list
       effect: allow
     - tool: task_update
+      effect: allow
+    - tool: notify                  # cho agent chủ động báo qua Telegram (deploy xong, CI đỏ…)
       effect: allow
     # - tool: db_query              # bỏ comment nếu dùng DB (chỉ SELECT — sqlguard đã chặn ghi)
     #   effect: allow

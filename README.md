@@ -4,7 +4,7 @@
 >
 > **Tên:** *yett* = cổng lưới sắt của thành lũy, loại thả xuống đóng kín theo mặc định — đúng triết lý fail-closed của Policy Gate (mọi tool call qua một cổng, mặc định từ chối). Lệnh CLI: `yett`.
 >
-> **Trạng thái:** Bộ khung code đã implement (hardening P0–P2 theo `plans/260705-1658-harden-yett-harness/`), 429 test collect được (424 xanh, 4 skip khi máy không có Docker daemon), mypy strict, ruff, import-linter đều sạch. Một số hạng mục mới chỉ **kiểm chứng qua fake/logic đơn lẻ, chưa verify end-to-end** — xem cột "Kiểm chứng" trong [Trạng thái implement](#trạng-thái-implement) bên dưới. *(Test web UI đã bind cổng 0 (ephemeral) — hết flaky trên Windows do dải cổng bị WSL2/Hyper-V loại trừ.)*
+> **Trạng thái:** Bộ khung code đã implement (hardening P0–P2 theo `plans/260705-1658-harden-yett-harness/`), 440 test collect được (435 xanh, 4 skip khi máy không có Docker daemon), mypy strict, ruff, import-linter đều sạch. Một số hạng mục mới chỉ **kiểm chứng qua fake/logic đơn lẻ, chưa verify end-to-end** — xem cột "Kiểm chứng" trong [Trạng thái implement](#trạng-thái-implement) bên dưới. *(Test web UI đã bind cổng 0 (ephemeral) — hết flaky trên Windows do dải cổng bị WSL2/Hyper-V loại trừ.)*
 
 ## Chạy thử nhanh
 
@@ -15,7 +15,7 @@ yett setup           # wizard cài đặt từng bước: provider → model →
 yett serve --open    # 🖥️ mở giao diện chat WEB (localhost) — giống "app"
 yett chat "báo cáo tiến độ tuần này của các project"   # hoặc dùng CLI
 yett usage --by provider --state state
-pytest -q            # 429 test (424 xanh, 4 skip nếu thiếu Docker daemon)
+pytest -q            # 440 test (435 xanh, 4 skip nếu thiếu Docker daemon)
 ```
 
 **Muốn dùng như một app Windows:** `yett serve --open` mở UI chat trong trình duyệt; hoặc đóng gói `yett.exe` (double-click chạy, không cần Python) — xem [`packaging/BUILD_EXE.md`](packaging/BUILD_EXE.md).
@@ -59,7 +59,8 @@ Chọn 1 trong 10+ model top (GLM 5.2, MiniMax M3, DeepSeek, Gemini, GPT-5.5, Cl
 | Packaging: config mẫu, pricing, bundled skills, subagent defs, deploy+runbook, backup/restore | ✅ e2e | — |
 | **Trợ lý cá nhân: task/goal store + tool (task_add/list/update) + briefing chủ động** **(wired vào `yett chat` + web tab "Việc")** | ✅ e2e | `test_tasks`, `test_assistant`, `test_web_console_endpoints` |
 | **Code navigation: list_dir/grep/search scoped** + complexity router + anti-loop step-budget | ✅ e2e | `test_codenav`, `test_complexity`, `test_core_loop` |
-| Telegram, VPN/SSH CLI thật, Anthropic native | ⏳ interface + backend inject sẵn, cần tài nguyên ngoài để nối | — |
+| **Kênh Telegram: long-poll + gating/pairing + dispatch→App.chat + notify tool + briefing tự động** **(wired vào `yett serve`)** | 🟡 fake — logic đúng qua transport inject (getUpdates/sendMessage), dispatch chạy App.chat thật; **chưa gọi api.telegram.org thật** (cần bot token) | `test_telegram`, `test_assistant` (notify + e2e dispatch) |
+| VPN/SSH CLI thật, Anthropic native | ⏳ interface + backend inject sẵn, cần tài nguyên ngoài để nối | — |
 
 ## Repo này sẽ làm gì
 
