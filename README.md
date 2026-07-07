@@ -4,7 +4,7 @@
 >
 > **Tên:** *yett* = cổng lưới sắt của thành lũy, loại thả xuống đóng kín theo mặc định — đúng triết lý fail-closed của Policy Gate (mọi tool call qua một cổng, mặc định từ chối). Lệnh CLI: `yett`.
 >
-> **Trạng thái:** Bộ khung code đã implement (hardening P0–P2 theo `plans/260705-1658-harden-yett-harness/`), 414 test collect được (410 xanh, 4 skip khi máy không có Docker daemon), mypy strict, ruff, import-linter đều sạch. Một số hạng mục mới chỉ **kiểm chứng qua fake/logic đơn lẻ, chưa verify end-to-end** — xem cột "Kiểm chứng" trong [Trạng thái implement](#trạng-thái-implement) bên dưới. *(Lưu ý test web UI dùng cổng cố định — `test_web_ui_health_chat_index`, `test_web_approval_*` — có thể fail lúc-được-lúc-không trên Windows khi dải cổng bị WSL2/Hyper-V loại trừ (`WinError 10013`, không liên quan code); fix triệt để là bind cổng 0 (ephemeral), chưa làm.)*
+> **Trạng thái:** Bộ khung code đã implement (hardening P0–P2 theo `plans/260705-1658-harden-yett-harness/`), 414 test collect được (410 xanh, 4 skip khi máy không có Docker daemon), mypy strict, ruff, import-linter đều sạch. Một số hạng mục mới chỉ **kiểm chứng qua fake/logic đơn lẻ, chưa verify end-to-end** — xem cột "Kiểm chứng" trong [Trạng thái implement](#trạng-thái-implement) bên dưới. *(Test web UI đã bind cổng 0 (ephemeral) — hết flaky trên Windows do dải cổng bị WSL2/Hyper-V loại trừ.)*
 
 ## Chạy thử nhanh
 
