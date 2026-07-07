@@ -180,6 +180,7 @@ button.send:hover { filter:brightness(1.08); } button.send:disabled { opacity:.5
 <script>
 const NAV = [
   { id:'overview', label:'Tổng quan', sub:'Overview' },
+  { id:'tasks',    label:'Việc',      sub:'To-do & mục tiêu' },
   { id:'agents',   label:'Agent',     sub:'Runs · subagents · scheduler' },
   { id:'projects', label:'Project',   sub:'Workspace & progress' },
   { id:'creds',    label:'Credential',sub:'Secret store' },
@@ -279,6 +280,7 @@ function show(id){
   chatwrap.style.display = isChat?'flex':'none';
   view.style.display = isChat?'none':'block';
   if(id==='overview') renderOverview();
+  else if(id==='tasks') renderTasks();
   else if(id==='agents') renderAgents();
   else if(id==='projects') renderProjects();
   else if(id==='creds') renderCreds();
@@ -288,7 +290,8 @@ function show(id){
 // ---- screens (dữ liệu thật) ----
 async function renderOverview(){
   view.innerHTML='<div class="empty">Đang tải…</div>';
-  const [m,u,t] = await Promise.all([j('/api/meta'),j('/api/usage'),j('/api/traces')]);
+  const [m,u,t,br] = await Promise.all([j('/api/meta'),j('/api/usage'),j('/api/traces'),j('/api/briefing')]);
+  const brief = (br&&br.text)||'';
   let total=0; for(const k in (u.rows||{})) total+=u.rows[k].cost_usd||0;
   const b=m.budget||{}, sb=m.sandbox||{}, c=m.counts||{};
   const tiles=[
@@ -297,7 +300,10 @@ async function renderOverview(){
     ['Sandbox', esc(sb.backend||'—'), 'network: '+esc(sb.network||'—')],
     ['Vòng tối đa', String(b.max_loop_iterations||'—'), (b.context_token_budget||0).toLocaleString()+' token ctx'],
   ];
-  let h='<div class="tiles">'+tiles.map(x=>'<div class="tile"><div class="cap">'+x[0]+'</div><div class="stat">'+x[1]+'</div><div class="tmeta">'+x[2]+'</div></div>').join('')+'</div>';
+  let h='';
+  if(brief){ h+='<div class="card" style="margin-bottom:14px"><div class="ct">Briefing</div>'+
+    '<div style="white-space:pre-wrap;font-size:13px;line-height:1.6">'+esc(brief)+'</div></div>'; }
+  h+='<div class="tiles">'+tiles.map(x=>'<div class="tile"><div class="cap">'+x[0]+'</div><div class="stat">'+x[1]+'</div><div class="tmeta">'+x[2]+'</div></div>').join('')+'</div>';
   h+='<div class="grid2"><div class="card"><div class="ct">Trạng thái hệ thống</div>'+
     row('Chế độ duyệt',esc(m.approval_mode||'—'))+row('Timezone',esc(m.timezone||'—'))+
     row('Skills', m.skills_enabled?'bật':'tắt')+row('Subagents', m.subagents_enabled?'bật':'tắt')+
@@ -345,6 +351,59 @@ async function renderAgents(){
   view.querySelectorAll('[data-run]').forEach(b=>b.onclick=()=>jobAction('/api/jobs/run',b.dataset.run));
   view.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>jobAction('/api/jobs/delete',b.dataset.del));
 }
+// ---- Việc (to-do & mục tiêu) ----
+function taskPill(s){ const m={done:['ok','xong'],doing:['running','đang làm'],todo:['warn','chờ']};
+  const x=m[s]||['idle',s]; return '<span class="badge b-'+x[0]+'"><i></i>'+x[1]+'</span>'; }
+function taskRow(t){
+  const pill = taskPill(t.status);
+  const meta=[]; if(t.project) meta.push('@'+esc(t.project));
+  if(t.priority&&t.priority!=='normal') meta.push(esc(t.priority));
+  if(t.due) meta.push('due '+esc(t.due));
+  const acts = t.status==='done'
+    ? '<button class="jbtn" data-reopen="'+t.id+'">Mở lại</button>'
+    : (t.status==='todo'?'<button class="jbtn" data-start="'+t.id+'">Bắt đầu</button> ':'')+
+      '<button class="jbtn" data-done="'+t.id+'">Xong</button>';
+  return '<tr><td>'+pill+'</td><td class="v">'+esc(t.title)+
+    (meta.length?' <span class="tmeta">'+meta.join(' · ')+'</span>':'')+
+    '</td><td style="text-align:right;white-space:nowrap">'+acts+
+    ' <button class="jbtn" data-tdel="'+t.id+'">Xóa</button></td></tr>';
+}
+async function renderTasks(){
+  view.innerHTML='<div class="empty">Đang tải…</div>';
+  const [tk,br]=await Promise.all([j('/api/tasks'),j('/api/briefing')]);
+  const tasks=tk.tasks||[];
+  let h='';
+  if(br&&br.text){ h+='<div class="card" style="margin-bottom:14px"><div class="ct">Briefing</div>'+
+    '<div style="white-space:pre-wrap;font-size:13px;line-height:1.6">'+esc(br.text)+'</div></div>'; }
+  h+='<div class="card"><div class="ct">Thêm việc</div>'+
+    '<div style="display:grid;grid-template-columns:2fr 1fr 0.8fr 1fr auto;gap:8px">'+
+    '<input id="tt" class="jin" placeholder="việc cần làm">'+
+    '<input id="tp" class="jin" placeholder="project (tùy chọn)">'+
+    '<select id="tpr" class="jin"><option value="normal">thường</option>'+
+    '<option value="high">cao</option><option value="low">thấp</option></select>'+
+    '<input id="tdue" class="jin" type="date">'+
+    '<button class="send" id="tadd">Thêm</button></div>'+
+    '<div id="tmsg" style="font-size:11.5px;color:var(--danger);min-height:15px;margin:6px 0 4px"></div>';
+  h+= tasks.length
+    ? '<table class="tbl"><tr><th></th><th>Việc</th><th></th></tr>'+tasks.map(taskRow).join('')+'</table>'
+    : empty('Chưa có việc. Thêm ở trên, hoặc nói với yett ở tab Chat: "nhắc tôi…".');
+  h+='</div>';
+  view.innerHTML=h;
+  $('tadd').onclick=taskAdd;
+  view.querySelectorAll('[data-start]').forEach(b=>b.onclick=()=>taskUpd(b.dataset.start,{status:'doing'}));
+  view.querySelectorAll('[data-done]').forEach(b=>b.onclick=()=>taskUpd(b.dataset.done,{status:'done'}));
+  view.querySelectorAll('[data-reopen]').forEach(b=>b.onclick=()=>taskUpd(b.dataset.reopen,{status:'todo'}));
+  view.querySelectorAll('[data-tdel]').forEach(b=>b.onclick=async()=>{ await postJSON('/api/tasks/delete',{id:+b.dataset.tdel}); renderTasks(); });
+}
+async function taskAdd(){
+  const title=$('tt').value.trim(), msg=$('tmsg');
+  if(!title){ msg.textContent='cần nội dung việc'; return; }
+  const body={title, priority:$('tpr').value, project:$('tp').value.trim()||null, due:$('tdue').value||null};
+  const r=await postJSON('/api/tasks',body);
+  if(r.error){ msg.textContent='❌ '+r.error; } else renderTasks();
+}
+async function taskUpd(id,fields){ await postJSON('/api/tasks/update',Object.assign({id:+id},fields)); renderTasks(); }
+
 async function renderProjects(){
   view.innerHTML='<div class="empty">Đang tải…</div>';
   const p=await j('/api/projects');

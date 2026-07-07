@@ -122,6 +122,39 @@ def test_console_endpoints(tmp_path: Path) -> None:
         app.close()
 
 
+def test_task_and_briefing_endpoints(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    httpd = serve(app, host="127.0.0.1", port=0)
+    port = httpd.server_address[1]
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        # thêm việc
+        code, r = _post(base + "/api/tasks",
+                        {"title": "deploy UAT", "priority": "high", "due": "2000-01-01"})
+        assert code == 200 and r["ok"] is True
+        tid = r["task"]["id"]
+        # title rỗng → 400
+        assert _post(base + "/api/tasks", {"title": "  "})[0] == 400
+        # list phản ánh việc thật
+        _, tk = _get(base + "/api/tasks")
+        assert any(t["id"] == tid and t["title"] == "deploy UAT" for t in tk["tasks"])
+        # briefing đọc việc quá hạn (due 2000)
+        _, br = _get(base + "/api/briefing")
+        assert "QUÁ HẠN" in br["text"] and br["data"]["open_count"] == 1
+        # cập nhật → done, rồi list?status=done thấy nó
+        assert _post(base + "/api/tasks/update", {"id": tid, "status": "done"})[1]["ok"] is True
+        _, done = _get(base + "/api/tasks?status=done")
+        assert any(t["id"] == tid for t in done["tasks"])
+        # cập nhật id không tồn tại → 404
+        assert _post(base + "/api/tasks/update", {"id": 9999, "status": "done"})[0] == 404
+        # xóa
+        assert _post(base + "/api/tasks/delete", {"id": tid})[1]["ok"] is True
+    finally:
+        httpd.shutdown()
+        app.close()
+
+
 def test_chat_project_context_injected(tmp_path: Path) -> None:
     """Chat kèm project → app.chat inject bối cảnh project (turn vẫn done qua FakeProvider)."""
     app = _app(tmp_path)

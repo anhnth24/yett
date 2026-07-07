@@ -140,6 +140,13 @@ security:
       effect: allow
     - tool: delegate                # cho phép ủy quyền cho subagent
       effect: allow
+    # Trợ lý cá nhân: quản lý việc/mục tiêu (ghi vào state riêng của yett, rủi ro thấp)
+    - tool: task_add
+      effect: allow
+    - tool: task_list
+      effect: allow
+    - tool: task_update
+      effect: allow
     # - tool: db_query              # bỏ comment nếu dùng DB (chỉ SELECT — sqlguard đã chặn ghi)
     #   effect: allow
     # Lệnh exec khác → mặc định DENY (fail-closed). Thêm rule nếu cần.

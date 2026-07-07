@@ -18,6 +18,7 @@ from yett.core.context import assemble_context
 from yett.core.loop import AgentLoop, LoopConfig, TurnResult
 from yett.errors import UserFacingError
 from yett.memory.session import SessionStore
+from yett.memory.tasks import TaskStore
 from yett.memory.workspace import WorkspaceMemory
 from yett.obs.cost import compute_cost
 from yett.obs.spanstore import SpanStore
@@ -31,6 +32,7 @@ from yett.tools.builtin.codenav import GrepTool, ListDirTool, SearchTool
 from yett.tools.builtin.exec import ExecTool
 from yett.tools.builtin.files import ReadFileTool, WriteFileTool
 from yett.tools.builtin.http_fetcher import SafeHttpFetcher
+from yett.tools.builtin.tasks import TaskAddTool, TaskListTool, TaskUpdateTool
 from yett.tools.builtin.web_fetch import WebFetchTool
 from yett.tools.projects import ProjectScope
 from yett.tools.registry import Registry
@@ -141,6 +143,7 @@ class App:
         self.checkpoints = CheckpointStore(state_dir / "scheduler.db")
         self.cron = CronStore(state_dir / "cron.db")
         self.sessions = SessionStore(state_dir / "sessions.db")
+        self.tasks = TaskStore(state_dir / "tasks.db", clock=clock)
         self.scope = ProjectScope(cfg.workspace_root, {n: p.path for n, p in cfg.projects.items()})
         self.workspace = WorkspaceMemory(cfg.workspace_root)
         self.complexity = ComplexityRouter(cfg.router)
@@ -165,6 +168,9 @@ class App:
         self.registry.register(ListDirTool(self.scope))
         self.registry.register(GrepTool(self.scope))
         self.registry.register(SearchTool(self.scope))
+        self.registry.register(TaskAddTool(self.tasks))
+        self.registry.register(TaskListTool(self.tasks))
+        self.registry.register(TaskUpdateTool(self.tasks))
         # [RT-7] fetcher=None (không inject, vd test) + có allowlist -> dựng fetcher SSRF-safe
         # thật (SafeHttpFetcher) thay vì để web_fetch không bao giờ được đăng ký trong runtime
         # thật. allowlist rỗng -> không đăng ký tool (sẽ luôn deny, không có ích).
@@ -295,6 +301,8 @@ class App:
             "ssh_exec": "chạy lệnh trên server qua SSH (deploy phải duyệt; cấm xóa file)",
             "log_read": "đọc log server (read-only)", "vpn": "bật/tắt VPN",
             "load_skill": "nạp hướng dẫn skill", "delegate": "giao việc cho subagent",
+            "task_add": "thêm việc/mục tiêu cần làm", "task_list": "xem việc cần làm",
+            "task_update": "cập nhật/hoàn thành việc",
         }
         lines = ["Bạn là yett — trợ lý DevOps cá nhân, fail-closed (mặc định từ chối, chặn trước khi chạy).",
                  "", "KHẢ NĂNG (tool đang bật):"]
@@ -320,9 +328,21 @@ class App:
             "\n- Không thấy bằng chứng thì nói rõ 'chưa tìm thấy / không kiểm chứng được', KHÔNG bịa."
             " Kiến thức nền có thể lỗi thời — nguồn trong project mới là chuẩn."
         )
+        lines.append(
+            "\nTRỢ LÝ CÁ NHÂN: anh quản lý việc/mục tiêu qua task_add/task_list/task_update."
+            " Khi người dùng nói kiểu 'nhắc tôi…', 'ghi lại việc…', 'tôi cần làm…' → tạo task."
+            " Khi được hỏi 'tôi đang làm gì / hôm nay có gì' → dùng task_list, ưu tiên việc"
+            " quá hạn/đến hạn. Chủ động gợi ý bước tiếp và hỏi lại khi thiếu thông tin."
+        )
         lines.append("\nGiới hạn an toàn: KHÔNG xóa file OS trên server, KHÔNG ALTER/DELETE/UPDATE DB "
                      "trừ khi được duyệt tường minh. Khi bị chặn, giải thích và đề xuất cách an toàn.")
         return "\n".join(lines)
+
+    def briefing(self) -> str:
+        """Tóm tắt 'hôm nay có gì' từ việc + hoạt động thật (dùng cho web, cron, chat)."""
+        from yett.brief import daily_briefing
+
+        return daily_briefing(self)
 
     async def chat(self, message: str, *, session_key: str = "main", turn_id: str | None = None,
                    project: str | None = None) -> TurnResult:
@@ -383,6 +403,7 @@ class App:
         self.checkpoints.close()
         self.cron.close()
         self.sessions.close()
+        self.tasks.close()
 
 
 class _MainCtx:

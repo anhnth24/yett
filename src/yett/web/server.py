@@ -178,6 +178,15 @@ def make_handler(
                 self._json(200, projects(app))
             elif self.path == "/api/jobs":
                 self._json(200, {"jobs": app.cron.list_all()})
+            elif self.path.startswith("/api/tasks"):
+                qs = parse_qs(urlparse(self.path).query)
+                status = qs["status"][0] if qs.get("status") else None
+                project = qs["project"][0] if qs.get("project") else None
+                tasks = app.tasks.list_tasks(status=status, project=project)
+                self._json(200, {"tasks": [t.as_dict() for t in tasks]})
+            elif self.path == "/api/briefing":
+                from yett.brief import briefing_data
+                self._json(200, {"text": app.briefing(), "data": briefing_data(app)})
             else:
                 self._json(404, {"error": "not found"})
 
@@ -262,6 +271,41 @@ def make_handler(
                 return
             if self.path == "/api/jobs/delete":
                 self._json(200, {"ok": app.cron.delete(data.get("id", ""))})
+                return
+
+            if self.path == "/api/tasks":  # thêm việc
+                title = (data.get("title") or "").strip()
+                if not title:
+                    self._json(400, {"error": "cần title"})
+                    return
+                try:
+                    t = app.tasks.add(
+                        title, project=(data.get("project") or None),
+                        priority=data.get("priority", "normal"),
+                        due=(data.get("due") or None), notes=(data.get("notes") or None),
+                    )
+                except ValueError as e:
+                    self._json(400, {"error": str(e)})
+                    return
+                self._json(200, {"ok": True, "task": t.as_dict()})
+                return
+            if self.path == "/api/tasks/update":
+                tid = data.get("id")
+                if not isinstance(tid, int) or app.tasks.get(tid) is None:
+                    self._json(404, {"error": "không có việc"})
+                    return
+                try:
+                    t = app.tasks.update(
+                        tid, status=data.get("status"), title=data.get("title"),
+                        priority=data.get("priority"), due=data.get("due"), notes=data.get("notes"),
+                    )
+                except ValueError as e:
+                    self._json(400, {"error": str(e)})
+                    return
+                self._json(200, {"ok": True, "task": t.as_dict() if t else None})
+                return
+            if self.path == "/api/tasks/delete":
+                self._json(200, {"ok": app.tasks.delete(int(data.get("id", 0)))})
                 return
 
             if self.path != "/api/chat":
