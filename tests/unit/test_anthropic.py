@@ -78,6 +78,37 @@ async def test_request_shape_headers_and_endpoint() -> None:
     assert "Authorization" not in captured["headers"]
 
 
+async def test_streaming_is_rejected_instead_of_silently_ignored() -> None:
+    called = False
+
+    async def transport(url, headers, body):
+        nonlocal called
+        called = True
+        return 200, _ok(text="unexpected")
+
+    with pytest.raises(ProviderError) as ei:
+        await _provider(transport).chat([Message(role="user", content="ping")], [], stream=True)
+    assert ei.value.reason == FailReason.BAD_REQUEST
+    assert not called
+
+
+async def test_adaptive_thinking_model_disables_thinking_and_omits_temperature() -> None:
+    captured: dict = {}
+
+    async def transport(url, headers, body):
+        captured["body"] = body
+        return 200, _ok(text="ok", model="claude-sonnet-5")
+
+    p = AnthropicProvider(
+        model="claude-sonnet-5",
+        api_key=SECRET,
+        http_post=transport,
+    )
+    await p.chat([Message(role="user", content="ping")], [])
+    assert captured["body"]["thinking"] == {"type": "disabled"}
+    assert "temperature" not in captured["body"]
+
+
 async def test_system_prompt_is_top_level_not_in_messages() -> None:
     captured: dict = {}
 
