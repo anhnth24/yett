@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: ["claude/harness-reference-architecture-0wwuek"]
   pull_request:
 
 jobs:
