@@ -49,6 +49,7 @@ Chọn 1 trong 10+ model top (GLM 5.2, MiniMax M3, DeepSeek, Gemini, GPT-5.5, Cl
 | Scheduler: cron + overlap + unattended approval timeout | ✅ e2e | `test_skills_hooks_sched` |
 | Eval suite golden tasks | ✅ e2e | `test_eval_websearch` |
 | **`web_search` tool** **(wired vào `yett chat` / `build_app`)** | 🟡 fake — đăng ký qua `App._wire_search()` khi có `search:` + secret store; invoke qua `App.chat` với transport inject (Brave backend offline); key thiếu/rỗng fail an toàn; kết quả lọc egress allowlist; secret không vào context/span. **Chưa gọi Brave API thật** | `test_eval_websearch`, `test_web_search_wired` |
+| **`image_gen` tool** **(wired vào `yett chat` / `build_app`)** | 🟡 fake — đăng ký qua `App._wire_image()` khi có `image:` + secret store; invoke qua `App.chat` với backend/transport inject (OpenAI-compatible Images offline); ảnh decode + sniff MIME, ghi atomic trong workspace; path traversal/symlink/oversize/malformed base64 bị từ chối; URL download mode chặn host ngoài allowlist + redirect; key thiếu/rỗng fail an toàn; secret không vào context/span; cost `per_call` vào ledger. **Chưa gọi Images API thật** | `test_image_gen`, `test_image_backend`, `test_image_gen_wired` |
 | Policy engine (policy-as-config, drop-in) + immutable core | ✅ e2e | `test_phase3` |
 | Audit hash-chain + retention + channel gating + analytics | ✅ e2e | `test_phase3`, `test_phase3_extra` |
 | Subagent delegation 1 cấp (không leo thang quyền) **(wired)** | ✅ e2e | `test_phase3`, `test_group2_wired` |

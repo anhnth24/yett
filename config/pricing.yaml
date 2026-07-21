@@ -76,3 +76,10 @@ groq:
 brave:
   web_search: { per_call: 0.005 }
   "*":        { per_call: 0.0 }
+
+# ── OpenAI-compatible Images (image_gen) ── per_call USD / 1 ảnh (UNVERIFIED — chỉnh theo model/gói)
+openai_compat:
+  dall-e-3:     { per_call: 0.040 }
+  dall-e-2:     { per_call: 0.020 }
+  gpt-image-1:  { per_call: 0.040 }
+  "*":          { per_call: 0.0 }

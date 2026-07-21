@@ -38,6 +38,7 @@ from yett.policy.immutable import ImmutableCore
 from yett.security.basic_gate import BasicGate
 from yett.security.filters import redact_attrs
 from yett.security.gate import Decision, PolicyGate, SessionCtx
+from yett.tools.assist.image_backend import ImageGenFn
 from yett.tools.assist.web_search import SearchFn
 from yett.tools.builtin.codenav import GrepTool, ListDirTool, SearchTool
 from yett.tools.builtin.exec import ExecTool
@@ -143,6 +144,7 @@ class App:
         fallback: Provider | None = None,
         fetcher=None,
         search_fn: SearchFn | None = None,
+        image_fn: ImageGenFn | None = None,
         secrets=None,
         clock: Callable[[], float] = time.time,
         config_path: str | Path | None = None,
@@ -249,6 +251,10 @@ class App:
         # không inject → dựng Brave backend thật (host API phải nằm trong egress allowlist).
         if cfg.search is not None and secrets is not None:
             self._wire_search(search_fn)
+        # image_gen: cần ImageCfg + secret store. image_fn injectable (test / local offline);
+        # không inject → dựng OpenAI-compatible Images backend (host trong egress allowlist).
+        if cfg.image is not None and secrets is not None:
+            self._wire_image(image_fn)
 
         # Remote ops (SSH/VPN/log): host registry cần trước khi tạo Gate (Gate phân lớp theo host).
         self.host_registry: HostRegistry | None = None
@@ -356,6 +362,37 @@ class App:
             )
         )
 
+    def _wire_image(self, image_fn: ImageGenFn | None = None) -> None:
+        """Đăng ký `image_gen` vào registry. Fail-closed: thiếu ImageCfg/secrets thì
+        caller không gọi; api_key_secret rỗng → không đăng ký."""
+        from yett.tools.assist.image_backend import OpenAICompatImageBackend
+        from yett.tools.assist.image_gen import ImageGenTool
+
+        icfg = self.cfg.image
+        if icfg is None or self._secrets is None:
+            return
+        if not icfg.api_key_secret:
+            return
+        allow = list(self.cfg.egress.allowlist)
+        fn: ImageGenFn = image_fn or OpenAICompatImageBackend(
+            allow,
+            model=icfg.model,
+            base_url=icfg.base_url,
+            response_format=icfg.response_format,
+        )
+        cost = compute_call_cost(icfg.provider, icfg.model, self._pricing)
+        self.registry.register(
+            ImageGenTool(
+                fn,
+                self._secrets,
+                icfg.api_key_secret,
+                scope=self.scope,
+                cost_usd=cost,
+                cost_provider=icfg.provider,
+                cost_model=icfg.model,
+            )
+        )
+
     def _wire_remote(self) -> None:
         from yett.tools.remote.hostprofile import HostProfile
         from yett.tools.remote.ssh_backend import AsyncSSHBackend
@@ -398,6 +435,7 @@ class App:
             "list_dir": "liệt kê cây thư mục (trong scope)", "grep": "tìm regex trong source (trong scope)",
             "search": "gộp nhiều grep/read/list trong 1 lần (nhanh, ít vòng)",
             "web_fetch": "tải URL (qua allowlist)", "web_search": "tìm kiếm web",
+            "image_gen": "sinh ảnh (lưu vào workspace)",
             "db_query": "query DB CHỈ ĐỌC (không sửa/xóa)", "db_config": "quản lý profile DB",
             "ssh_exec": "chạy lệnh trên server qua SSH (deploy phải duyệt; cấm xóa file)",
             "log_read": "đọc log server (read-only)", "vpn": "bật/tắt VPN",
