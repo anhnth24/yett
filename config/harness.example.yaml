@@ -110,17 +110,34 @@ projects:
 skills_enabled: true
 subagents_enabled: true
 
-# ---- Server SSH (deploy UAT, đọc log). Host lạ → deny; xóa file → cấm tuyệt đối ----
+# ---- Server SSH + VPN (deploy UAT, đọc log). Host lạ → deny; xóa file → cấm tuyệt đối ----
+# VPN: model chỉ chọn TÊN profile (allowlist). Credentials = TÊN secret, giá trị không vào
+# context/span/log. CLI argv cố định (không shell, không flag tùy ý từ model).
+# Operator pre-connect: `yett vpn connect|disconnect|status <profile>`
 # remote:
+#   vpn_profiles:
+#     office:                         # openfortivpn (Fortinet SSL) — khuyến nghị trên WSL2
+#       kind: openfortivpn
+#       host: vpn.example.com
+#       port: 443
+#       username: you@example.com     # hoặc username_secret: vpn_user
+#       cred_secret: vpn_office_pw    # export YETT_SECRET_VPN_OFFICE_PW=... hoặc secrets/vpn_office_pw
+#     # home:                         # OpenVPN — config_file tuyệt đối, không symlink
+#     #   kind: openvpn
+#     #   config_file: /etc/openvpn/client.ovpn
+#     #   username: you
+#     #   cred_secret: vpn_home_pw
 #   hosts:
 #     uat-app-1:
 #       address: 10.0.0.10
 #       user: deploy
 #       auth: keyfile:uat_key        # đặt private key vào secrets/uat_key
+#       vpn_required: office         # tự bật VPN profile này trước SSH (fail-closed nếu thiếu)
 #       tier: uat                    # uat cho deploy; restricted chỉ đọc
 #       log_paths: [/var/log/app/*.log]
 #       deploy_script: /opt/deploy/run.sh   # lệnh deploy DUY NHẤT được phép (phải duyệt)
-# Cần cài: pip install asyncssh
+# Cần cài: pip install asyncssh; openfortivpn và/hoặc openvpn (xem `yett doctor`)
+# Gate: ssh_exec/log_read/vpn được allow theo host/profile đã khai — không cần rule allowlist riêng.
 
 # ---- Sandbox ----
 sandbox:

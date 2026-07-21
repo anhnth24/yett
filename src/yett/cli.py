@@ -6,6 +6,7 @@ Lệnh:
   yett traces list|get chạy trên state dir
   yett usage           tổng chi theo provider
   yett memory list|approve|reject  duyệt đề xuất MEMORY.md (staging → merge)
+  yett vpn connect|disconnect|status <profile>  operator pre-connect VPN (openfortivpn/openvpn)
 Các lệnh nối provider thật (chat) cần config + secret; khung sẵn ở đây.
 """
 
@@ -73,6 +74,14 @@ def build_parser() -> argparse.ArgumentParser:
     mem_reject.add_argument("id", help="id đề xuất (32 hex)")
     mem_reject.add_argument("--config", default="config/harness.yaml")
     mem_reject.add_argument("--workspace", default=None)
+
+    vpn = sub.add_parser(
+        "vpn",
+        help="operator: connect/disconnect/status VPN profile (pre-connect trước SSH)",
+    )
+    vpn.add_argument("action", choices=["connect", "disconnect", "status"])
+    vpn.add_argument("profile", help="tên profile trong remote.vpn_profiles")
+    vpn.add_argument("--config", default="config/harness.yaml")
     return p
 
 
@@ -233,6 +242,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_chat(args)
     if args.command == "memory":
         return _cmd_memory(args)
+    if args.command == "vpn":
+        return _cmd_vpn(args)
     return 0
 
 
@@ -324,6 +335,62 @@ def _cmd_chat(args) -> int:
     finally:
         app.close()
     return 0
+
+
+def _cmd_vpn(args) -> int:
+    """Operator CLI: bật/tắt/status VPN theo profile allowlist — cùng runner với tool path.
+
+    Không in secret; lỗi UserFacingError đã redact. Không claim tunnel thật đã verify —
+    chỉ báo kết quả từ runner (process ownership / marker CLI).
+    """
+    from yett.config.loader import load_config
+    from yett.errors import UserFacingError, YettError
+    from yett.secrets.resolve import build_secret_store
+    from yett.security.filters import redact
+    from yett.tools.remote.vpn import SubprocessVpnRunner, VpnManager
+
+    if not Path(args.config).exists():
+        print(f"[yett] chưa có config {args.config}. Chạy 'yett setup' trước.", file=sys.stderr)
+        return 1
+    try:
+        cfg = load_config(args.config)
+        profiles = dict(cfg.remote.vpn_profiles)
+        if not profiles:
+            print("[yett] remote.vpn_profiles trống — không có profile để dùng.", file=sys.stderr)
+            return 1
+        if args.profile not in profiles:
+            print(
+                f"[yett] profile '{args.profile}' không nằm trong allowlist config.",
+                file=sys.stderr,
+            )
+            return 1
+        secrets = build_secret_store(cfg.secret_backend)
+        mgr = VpnManager(SubprocessVpnRunner(profiles), secrets, profiles)
+    except YettError as e:
+        print(f"[yett] {redact(str(e))}", file=sys.stderr)
+        return 1
+
+    async def _run() -> int:
+        try:
+            if args.action == "connect":
+                await mgr.ensure(args.profile)
+                print(f"[yett] VPN '{args.profile}' đã kết nối")
+                return 0
+            if args.action == "disconnect":
+                await mgr.disconnect(args.profile)
+                print(f"[yett] VPN '{args.profile}' đã ngắt")
+                return 0
+            connected = await mgr.status(args.profile)
+            print(
+                f"[yett] VPN '{args.profile}': "
+                f"{'connected' if connected else 'disconnected'}"
+            )
+            return 0
+        except UserFacingError as e:
+            print(f"[yett] {redact(str(e))}", file=sys.stderr)
+            return 1
+
+    return asyncio.run(_run())
 
 
 if __name__ == "__main__":

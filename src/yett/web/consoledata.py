@@ -65,7 +65,10 @@ def secrets_status(app: "App") -> list[dict[str, Any]]:
         if h.auth.startswith("keyfile:"):
             add(h.auth.split(":", 1)[1], f"ssh_exec · {hn}")
     for vn, vp in cfg.remote.vpn_profiles.items():
-        add(str(vp.get("cred_secret", "")), f"vpn · {vn}")
+        if vp.cred_secret:
+            add(vp.cred_secret, f"vpn · {vn}")
+        if vp.username_secret:
+            add(vp.username_secret, f"vpn · {vn} · user")
 
     store = app._secrets
     out: list[dict[str, Any]] = []

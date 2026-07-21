@@ -5,6 +5,7 @@ Bảo đảm: host lạ → deny, log ngoài log_paths → deny, secret không l
 
 from __future__ import annotations
 
+from yett.config.models import VpnProfileCfg
 from yett.secrets.backends import InMemorySecretStore
 from yett.tools.db.db_query import DbProfile, DbQueryTool
 from yett.tools.remote.hostprofile import HostProfile, HostRegistry
@@ -31,7 +32,7 @@ class _FakeVpnRunner:
     def __init__(self) -> None:
         self.connected = set()
 
-    async def connect(self, profile, *, creds):
+    async def connect(self, profile, *, creds, cancel=None):
         self.connected.add(profile)
         return True
 
@@ -41,6 +42,14 @@ class _FakeVpnRunner:
 
     async def status(self, profile):
         return profile in self.connected
+
+
+def _vpn_profiles(**overrides) -> dict[str, VpnProfileCfg]:
+    cfg = dict(
+        kind="openfortivpn", host="vpn.example.com", cred_secret="vpn_pw", username="u",
+    )
+    cfg.update(overrides)
+    return {"office": VpnProfileCfg(**cfg)}
 
 
 def _hosts() -> HostRegistry:
@@ -65,9 +74,10 @@ async def test_ssh_host_unknown_denied() -> None:
 
 
 async def test_ssh_uses_key_from_secret_not_context() -> None:
-    secrets = InMemorySecretStore({"uat_key": "PRIVATEKEY"})
+    secrets = InMemorySecretStore({"uat_key": "PRIVATEKEY", "vpn_pw": "pw"})
     ssh = _FakeSsh()
-    vpn = VpnManager(_FakeVpnRunner(), secrets, {"office": {}})
+    profiles = _vpn_profiles()
+    vpn = VpnManager(_FakeVpnRunner(), secrets, profiles)
     tool = SshExecTool(_hosts(), ssh, secrets, vpn=vpn)
     res = await tool.run({"host": "uat-app-1", "cmd": "tail -n 10 /var/log/app/x.log"}, _Ctx())
     assert not res.is_error
@@ -77,15 +87,21 @@ async def test_ssh_uses_key_from_secret_not_context() -> None:
 
 
 async def test_log_read_outside_paths_denied() -> None:
-    secrets = InMemorySecretStore({"uat_key": "K"})
-    tool = LogReadTool(_hosts(), _FakeSsh(), secrets, vpn=VpnManager(_FakeVpnRunner(), secrets, {"office": {}}))
+    secrets = InMemorySecretStore({"uat_key": "K", "vpn_pw": "pw"})
+    profiles = _vpn_profiles()
+    tool = LogReadTool(
+        _hosts(), _FakeSsh(), secrets, vpn=VpnManager(_FakeVpnRunner(), secrets, profiles)
+    )
     res = await tool.run({"host": "uat-app-1", "path": "/etc/passwd"}, _Ctx())
     assert res.is_error and "DENIED" in res.content
 
 
 async def test_log_read_allowed_path() -> None:
-    secrets = InMemorySecretStore({"uat_key": "K"})
-    tool = LogReadTool(_hosts(), _FakeSsh(), secrets, vpn=VpnManager(_FakeVpnRunner(), secrets, {"office": {}}))
+    secrets = InMemorySecretStore({"uat_key": "K", "vpn_pw": "pw"})
+    profiles = _vpn_profiles()
+    tool = LogReadTool(
+        _hosts(), _FakeSsh(), secrets, vpn=VpnManager(_FakeVpnRunner(), secrets, profiles)
+    )
     res = await tool.run({"host": "uat-app-1", "path": "/var/log/app/error.log"}, _Ctx())
     assert not res.is_error
 
@@ -93,7 +109,8 @@ async def test_log_read_allowed_path() -> None:
 async def test_vpn_connect_disconnect() -> None:
     secrets = InMemorySecretStore({"vpn_pw": "secret"})
     runner = _FakeVpnRunner()
-    mgr = VpnManager(runner, secrets, {"office": {"cred_secret": "vpn_pw"}})
+    profiles = _vpn_profiles()
+    mgr = VpnManager(runner, secrets, profiles)
     tool = VpnTool(mgr)
     r = await tool.run({"action": "connect", "profile": "office"}, _Ctx())
     assert "kết nối" in r.content

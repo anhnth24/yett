@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+_VPN_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+_VPN_HOST_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,252}[A-Za-z0-9])?$")
 
 
 class ProviderCfg(BaseModel):
@@ -100,9 +104,80 @@ class HostCfg(BaseModel):
     deploy_script: str | None = None
 
 
+class VpnProfileCfg(BaseModel):
+    """Profile VPN khai báo trước (spec P2 §2.3). Model chỉ được chọn TÊN profile — không
+    truyền flag/argv tùy ý. Credentials là TÊN secret; giá trị lấy tại điểm dùng cuối.
+
+    kind=openfortivpn: host (+ port) + cred_secret (password); username có thể plaintext
+    hoặc username_secret.
+    kind=openvpn: config_file tuyệt đối tới .ovpn; nếu cần user/pass thì cred_secret
+    (+ username / username_secret) → file auth tạm, KHÔNG đưa password lên argv.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["openfortivpn", "openvpn"] = "openfortivpn"
+    cred_secret: str = ""  # TÊN secret password; rỗng = không auth-user-pass (vd cert-only)
+    username: str = ""
+    username_secret: str = ""
+    host: str = ""  # openfortivpn
+    port: int = Field(default=443, ge=1, le=65535)
+    config_file: str = ""  # openvpn — absolute path
+    connect_timeout_sec: int = Field(default=60, ge=1, le=600)
+
+    @field_validator("host")
+    @classmethod
+    def _host_safe(cls, v: str) -> str:
+        v = (v or "").strip()
+        if v and _VPN_HOST_RE.fullmatch(v) is None:
+            raise ValueError(
+                "vpn host chỉ được hostname/IPv4 (chữ, số, '.', '-'); không khoảng trắng/metachar"
+            )
+        return v
+
+    @field_validator("config_file")
+    @classmethod
+    def _config_file_abs(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            return ""
+        p = Path(v)
+        if not p.is_absolute():
+            raise ValueError("vpn config_file phải là đường dẫn tuyệt đối")
+        # Chặn traversal lexical trước khi runner mở file (O_NOFOLLOW).
+        if ".." in p.parts:
+            raise ValueError("vpn config_file không được chứa '..'")
+        return v
+
+    @model_validator(mode="after")
+    def _kind_fields(self) -> VpnProfileCfg:
+        if self.kind == "openfortivpn":
+            if not self.host:
+                raise ValueError("openfortivpn cần 'host'")
+            if not self.cred_secret:
+                raise ValueError("openfortivpn cần 'cred_secret' (TÊN secret password)")
+        elif self.kind == "openvpn":
+            if not self.config_file:
+                raise ValueError("openvpn cần 'config_file'")
+        if self.username and self.username_secret:
+            raise ValueError("chỉ chọn một trong 'username' hoặc 'username_secret'")
+        return self
+
+
 class RemoteCfg(BaseModel):
     hosts: dict[str, HostCfg] = Field(default_factory=dict)
-    vpn_profiles: dict[str, dict] = Field(default_factory=dict)  # name -> {cred_secret: <tên>}
+    vpn_profiles: dict[str, VpnProfileCfg] = Field(default_factory=dict)
+
+    @field_validator("vpn_profiles")
+    @classmethod
+    def _profile_names(cls, v: dict[str, VpnProfileCfg]) -> dict[str, VpnProfileCfg]:
+        for name in v:
+            if _VPN_PROFILE_NAME_RE.fullmatch(name) is None:
+                raise ValueError(
+                    f"tên vpn profile '{name}' không hợp lệ "
+                    "(chỉ [A-Za-z0-9_-], bắt đầu bằng chữ/số, ≤64 ký tự)"
+                )
+        return v
 
 
 class TelegramCfg(BaseModel):
