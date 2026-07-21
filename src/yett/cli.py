@@ -66,11 +66,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="workspace root (mặc định lấy từ config)",
     )
     mem_approve = mem_sub.add_parser("approve", help="duyệt đề xuất → append vào MEMORY.md")
-    mem_approve.add_argument("id", help="id đề xuất (8 hex)")
+    mem_approve.add_argument("id", help="id đề xuất (32 hex)")
     mem_approve.add_argument("--config", default="config/harness.yaml")
     mem_approve.add_argument("--workspace", default=None)
     mem_reject = mem_sub.add_parser("reject", help="từ chối đề xuất (xóa staging)")
-    mem_reject.add_argument("id", help="id đề xuất (8 hex)")
+    mem_reject.add_argument("id", help="id đề xuất (32 hex)")
     mem_reject.add_argument("--config", default="config/harness.yaml")
     mem_reject.add_argument("--workspace", default=None)
     return p
@@ -249,13 +249,18 @@ def _resolve_workspace(config: str, workspace: str | None) -> Path | None:
 
 
 def _cmd_memory(args) -> int:
-    from yett.memory.review_gate import MemoryReviewGate
+    from yett.errors import YettError
+    from yett.memory.review_gate import MemoryReviewGate, is_valid_proposal_id
 
     action = getattr(args, "memory_action", None)
     if not action:
         print("dùng: yett memory list|approve|reject", file=sys.stderr)
         return 1
-    root = _resolve_workspace(args.config, args.workspace)
+    try:
+        root = _resolve_workspace(args.config, args.workspace)
+    except (YettError, OSError, ValueError) as exc:
+        print(f"[yett] không đọc được workspace memory: {exc}", file=sys.stderr)
+        return 1
     if root is None:
         print(
             f"[yett] chưa có config {args.config}. Truyền --workspace hoặc chạy 'yett setup'.",
@@ -263,29 +268,36 @@ def _cmd_memory(args) -> int:
         )
         return 1
     gate = MemoryReviewGate(root)
-    if action == "list":
-        pending = gate.list_pending()
-        if not pending:
-            print("(không có đề xuất memory đang chờ)")
+    try:
+        if action == "list":
+            pending = gate.list_pending()
+            if not pending:
+                print("(không có đề xuất memory đang chờ)")
+                return 0
+            for pid, content in pending:
+                preview = "".join(ch if ch.isprintable() else " " for ch in content)
+                if len(preview) > 120:
+                    preview = preview[:117] + "..."
+                print(f"{pid}\t{preview}")
             return 0
-        for pid, content in pending:
-            preview = content.replace("\n", " ")
-            if len(preview) > 120:
-                preview = preview[:117] + "..."
-            print(f"{pid}\t{preview}")
-        return 0
-    if action == "approve":
-        if not gate.approve(args.id):
-            print(f"[yett] không tìm thấy đề xuất id={args.id}", file=sys.stderr)
+        if action in {"approve", "reject"} and not is_valid_proposal_id(args.id):
+            print("[yett] id đề xuất không hợp lệ (cần đúng 32 ký tự hex thường)", file=sys.stderr)
             return 1
-        print(f"[yett] đã duyệt {args.id} → MEMORY.md")
-        return 0
-    if action == "reject":
-        if not gate.reject(args.id):
-            print(f"[yett] không tìm thấy đề xuất id={args.id}", file=sys.stderr)
-            return 1
-        print(f"[yett] đã từ chối {args.id}")
-        return 0
+        if action == "approve":
+            if not gate.approve(args.id, actor="operator:cli"):
+                print(f"[yett] không tìm thấy đề xuất id={args.id}", file=sys.stderr)
+                return 1
+            print(f"[yett] đã duyệt {args.id} → MEMORY.md")
+            return 0
+        if action == "reject":
+            if not gate.reject(args.id, actor="operator:cli"):
+                print(f"[yett] không tìm thấy đề xuất id={args.id}", file=sys.stderr)
+                return 1
+            print(f"[yett] đã từ chối {args.id}")
+            return 0
+    except (YettError, OSError, ValueError) as exc:
+        print(f"[yett] memory {action} thất bại an toàn: {exc}", file=sys.stderr)
+        return 1
     return 1
 
 

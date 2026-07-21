@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
+import multiprocessing
+import os
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
 from yett.config.models import SecurityCfg, ToolRule
-from yett.memory.review_gate import MemoryReviewGate
+from yett.memory.review_gate import MemoryReviewError, MemoryReviewGate, is_valid_proposal_id
 from yett.memory.store import MemoryStore
 from yett.memory.workspace import WorkspaceMemory
 from yett.security.basic_gate import BasicGate
@@ -123,6 +127,11 @@ def _reg_with_memory(ws: Path) -> tuple[Registry, MemoryReviewGate]:
     return reg, gate
 
 
+def _approve_in_process(item: tuple[str, str]) -> bool:
+    workspace, pid = item
+    return MemoryReviewGate(Path(workspace)).approve(pid)
+
+
 async def test_memory_propose_via_gate_registry_filters_no_direct_write(tmp_path: Path) -> None:
     """Đường chạy thật: Gate → Registry → Filters; propose chỉ tạo staging."""
     ws = tmp_path / "ws"
@@ -209,6 +218,25 @@ async def test_write_file_cannot_write_pending_staging(tmp_path: Path) -> None:
     assert gate.list_pending() == []
 
 
+async def test_write_file_blocks_lexical_memory_symlink_before_resolution(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = ws / "ordinary.txt"
+    target.write_text("unchanged", encoding="utf-8")
+    (ws / "MEMORY.md").symlink_to(target)
+    reg, _gate = _reg_with_memory(ws)
+    g = BasicGate(SecurityCfg(allowlist=[ToolRule(tool="write_file", effect="allow")]))
+    res = await execute_tool(
+        "write_file",
+        {"path": str(ws / "MEMORY.md"), "content": "bypass"},
+        _Ctx("main"),
+        gate=g,
+        registry=reg,
+    )
+    assert res.is_error
+    assert target.read_text(encoding="utf-8") == "unchanged"
+
+
 async def test_memory_propose_redacts_secrets_before_staging(tmp_path: Path) -> None:
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -227,3 +255,156 @@ async def test_memory_propose_redacts_secrets_before_staging(tmp_path: Path) -> 
     assert len(pending) == 1
     assert secret not in pending[0][1]
     assert "[REDACTED]" in pending[0][1]
+
+
+def test_review_gate_redacts_before_disk_even_when_called_directly(tmp_path: Path) -> None:
+    secret = "sk-ant-" + ("Z" * 24)
+    gate = MemoryReviewGate(tmp_path)
+    pid = gate.propose(f"credential={secret}")
+    raw = (gate.pending_dir / f"{pid}.md").read_text(encoding="utf-8")
+    assert secret not in raw
+    assert "[REDACTED]" in raw
+
+
+def test_review_gate_rejects_pending_directory_symlink(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (tmp_path / "memory").mkdir()
+    (tmp_path / "memory" / "pending").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(MemoryReviewError, match="an toàn"):
+        MemoryReviewGate(tmp_path).propose("must not escape")
+    assert list(outside.iterdir()) == []
+
+
+def test_review_gate_rejects_staged_file_symlink(tmp_path: Path) -> None:
+    gate = MemoryReviewGate(tmp_path)
+    gate.ensure_storage()
+    victim = tmp_path / "victim"
+    victim.write_text("outside secret", encoding="utf-8")
+    pid = "a" * 32
+    (gate.pending_dir / f"{pid}.md").symlink_to(victim)
+    with pytest.raises(MemoryReviewError, match="không an toàn"):
+        gate.approve(pid)
+    assert victim.read_text(encoding="utf-8") == "outside secret"
+    assert not (tmp_path / "MEMORY.md").exists()
+
+
+def test_review_gate_rejects_memory_symlink_without_touching_target(tmp_path: Path) -> None:
+    target = tmp_path / "outside"
+    target.write_text("unchanged", encoding="utf-8")
+    (tmp_path / "MEMORY.md").symlink_to(target)
+    gate = MemoryReviewGate(tmp_path)
+    pid = gate.propose("approved text")
+    with pytest.raises(MemoryReviewError, match="không an toàn"):
+        gate.approve(pid)
+    assert target.read_text(encoding="utf-8") == "unchanged"
+    assert gate.list_pending()[0][0] == pid
+
+
+def test_review_gate_concurrent_distinct_approvals_do_not_lose_updates(tmp_path: Path) -> None:
+    gate = MemoryReviewGate(tmp_path)
+    proposals = [(gate.propose(f"item-{i}"), f"item-{i}") for i in range(20)]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda item: MemoryReviewGate(tmp_path).approve(item[0]), proposals))
+    assert results == [True] * len(proposals)
+    memory = (tmp_path / "MEMORY.md").read_text(encoding="utf-8")
+    lines = memory.splitlines()
+    for pid, content in proposals:
+        assert lines.count(content) == 1
+        assert memory.count(f"yett-memory-proposal:{pid}") == 1
+    assert gate.list_pending() == []
+
+
+def test_review_gate_concurrent_same_approval_is_exactly_once(tmp_path: Path) -> None:
+    pid = MemoryReviewGate(tmp_path).propose("only once")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: MemoryReviewGate(tmp_path).approve(pid), range(2)))
+    assert sorted(results) == [False, True]
+    assert (tmp_path / "MEMORY.md").read_text(encoding="utf-8").count("only once") == 1
+
+
+def test_review_gate_cross_process_approval_is_exactly_once(tmp_path: Path) -> None:
+    pid = MemoryReviewGate(tmp_path).propose("cross-process")
+    with ProcessPoolExecutor(max_workers=2, mp_context=multiprocessing.get_context("spawn")) as pool:
+        results = list(pool.map(_approve_in_process, [(str(tmp_path), pid)] * 2))
+    assert sorted(results) == [False, True]
+    assert (tmp_path / "MEMORY.md").read_text(encoding="utf-8").count("cross-process") == 1
+
+
+def test_review_gate_audit_chain_records_lifecycle_and_detects_tamper(tmp_path: Path) -> None:
+    gate = MemoryReviewGate(tmp_path, clock=lambda: 7.0)
+    approved = gate.propose("approved")
+    rejected = gate.propose("rejected")
+    assert gate.approve(approved)
+    assert gate.reject(rejected)
+    audit_path = tmp_path / "memory" / "review-audit.jsonl"
+    rows = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+    assert [row["action"] for row in rows] == [
+        "proposed", "proposed", "approved", "rejected",
+    ]
+    assert all(row["ts"] == 7.0 and "content_sha256" in row for row in rows)
+    audit_path.write_text(audit_path.read_text(encoding="utf-8") + "{}\n", encoding="utf-8")
+    with pytest.raises(MemoryReviewError, match="hash-chain"):
+        gate.propose("must fail closed")
+
+
+def test_review_gate_rolls_back_approval_when_audit_commit_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate = MemoryReviewGate(tmp_path)
+    pid = gate.propose("retryable")
+    original = gate._append_audit
+
+    def fail_approved(*args, **kwargs):
+        if kwargs["action"] == "approved":
+            raise OSError("disk full")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(gate, "_append_audit", fail_approved)
+    with pytest.raises(MemoryReviewError, match="thất bại an toàn"):
+        gate.approve(pid)
+    assert not (tmp_path / "MEMORY.md").exists()
+    assert gate.list_pending()[0][0] == pid
+
+
+def test_review_gate_detects_memory_replacement_toctou(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import yett.memory.review_gate as review_mod
+
+    (tmp_path / "MEMORY.md").write_text("base", encoding="utf-8")
+    gate = MemoryReviewGate(tmp_path)
+    pid = gate.propose("new entry")
+    real_stat = review_mod.os.stat
+    calls = 0
+
+    def racing_stat(path, *args, **kwargs):
+        nonlocal calls
+        if path == "MEMORY.md" and kwargs.get("dir_fd") is not None:
+            calls += 1
+            if calls == 2:
+                dir_fd = kwargs["dir_fd"]
+                fd = os.open(
+                    ".racer",
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                    dir_fd=dir_fd,
+                )
+                os.write(fd, b"raced")
+                os.close(fd)
+                os.replace(".racer", "MEMORY.md", src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(review_mod.os, "stat", racing_stat)
+    with pytest.raises(MemoryReviewError, match="TOCTOU"):
+        gate.approve(pid)
+    assert (tmp_path / "MEMORY.md").read_text(encoding="utf-8") == "raced"
+    assert gate.list_pending()[0][0] == pid
+
+
+@pytest.mark.parametrize(
+    "pid",
+    ["../escape", "a" * 31, "a" * 33, "A" * 32, "g" * 32, "a" * 32 + "/x", 123],
+)
+def test_proposal_id_validation_is_exact(pid: object) -> None:
+    assert is_valid_proposal_id(pid) is False

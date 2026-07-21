@@ -5,6 +5,8 @@ Tách khỏi cli.py để test được. clock/provider injectable → test offl
 
 from __future__ import annotations
 
+import os
+import stat
 import time
 from pathlib import Path, PurePosixPath
 from typing import Callable
@@ -17,7 +19,11 @@ from yett.core.complexity import ComplexityRouter
 from yett.core.context import assemble_context
 from yett.core.loop import AgentLoop, LoopConfig, TurnResult
 from yett.errors import UserFacingError
-from yett.memory.paths import MEMORY_FILENAME
+from yett.memory.paths import (
+    MEMORY_AUDIT_FILENAME,
+    MEMORY_FILENAME,
+    MEMORY_LOCK_FILENAME,
+)
 from yett.memory.review_gate import MemoryReviewGate
 from yett.memory.session import SessionStore
 from yett.memory.tasks import TaskStore
@@ -150,11 +156,13 @@ class App:
         self.cron = CronStore(state_dir / "cron.db")
         self.sessions = SessionStore(state_dir / "sessions.db")
         self.tasks = TaskStore(state_dir / "tasks.db", clock=clock)
+        Path(cfg.workspace_root).mkdir(parents=True, exist_ok=True)
         self.scope = ProjectScope(cfg.workspace_root, {n: p.path for n, p in cfg.projects.items()})
         self.workspace = WorkspaceMemory(cfg.workspace_root)
         # Memory review gate: agent chỉ đề xuất vào staging qua tool memory_propose;
         # MEMORY.md chỉ được ghi khi người vận hành duyệt (CLI `yett memory approve`).
         self.memory_gate = MemoryReviewGate(Path(cfg.workspace_root))
+        self.memory_gate.ensure_storage()
         self.complexity = ComplexityRouter(cfg.router)
 
         roots = _project_roots(cfg)
@@ -164,7 +172,42 @@ class App:
         elif cfg.sandbox.backend == "docker":
             # Fail-closed: KHÔNG bao giờ hạ cấp âm thầm về host khi backend=docker.
             probe_docker()
-            sb = DockerSandbox(cfg.sandbox, mounts={str(h): c for h, c in roots.items()})
+            placeholder = (state_dir / ".memory-readonly-overlay").resolve()
+            try:
+                placeholder_fd = os.open(
+                    placeholder,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                    0o400,
+                )
+            except FileExistsError:
+                placeholder_fd = os.open(
+                    placeholder, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                )
+            try:
+                if not stat.S_ISREG(os.fstat(placeholder_fd).st_mode):
+                    raise UserFacingError("memory readonly overlay không phải regular file")
+            finally:
+                os.close(placeholder_fd)
+            ws = Path(cfg.workspace_root).resolve()
+            pending = self.memory_gate.pending_dir
+            overlay_fallback = str(placeholder)
+            overlays = {
+                "/workspace/MEMORY.md": (str(ws / MEMORY_FILENAME), overlay_fallback),
+                "/workspace/memory/pending": (str(pending), str(pending)),
+                "/workspace/memory/review-audit.jsonl": (
+                    str(ws / "memory" / MEMORY_AUDIT_FILENAME),
+                    overlay_fallback,
+                ),
+                "/workspace/.yett-memory-review.lock": (
+                    str(ws / MEMORY_LOCK_FILENAME),
+                    overlay_fallback,
+                ),
+            }
+            sb = DockerSandbox(
+                cfg.sandbox,
+                mounts={str(h): c for h, c in roots.items()},
+                readonly_overlays=overlays,
+            )
         else:
             sb = LocalSandbox()
         self.registry = Registry()

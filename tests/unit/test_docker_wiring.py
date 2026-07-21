@@ -230,6 +230,8 @@ def test_app_builds_docker_sandbox_with_mounts_when_docker_ready(tmp_path: Path,
     exec_tool = app.registry.get("exec")
     assert isinstance(exec_tool._sandbox, DockerSandbox)
     assert exec_tool._sandbox._mounts == {str((tmp_path / "ws").resolve()): "/workspace"}
+    assert "/workspace/MEMORY.md" in exec_tool._sandbox._readonly_overlays
+    assert "/workspace/memory/pending" in exec_tool._sandbox._readonly_overlays
     app.close()
 
 
@@ -256,6 +258,28 @@ def test_docker_sandbox_base_flags_include_all_hardening() -> None:
     assert "-v" in flags
     v_idx = flags.index("-v")
     assert flags[v_idx + 1] == "/host/ws:/workspace:rw"
+
+
+def test_docker_readonly_overlay_blocks_exec_memory_bypass_and_tracks_approval(
+    tmp_path: Path,
+) -> None:
+    """The enforcement boundary is a child read-only bind, not command-string parsing."""
+    fallback = tmp_path / "empty"
+    fallback.write_text("", encoding="utf-8")
+    memory = tmp_path / "MEMORY.md"
+    sb = DockerSandbox(
+        SandboxCfg(backend="docker"),
+        mounts={str(tmp_path): "/workspace"},
+        readonly_overlays={"/workspace/MEMORY.md": (str(memory), str(fallback))},
+    )
+    flags_before = sb._base_flags()
+    assert f"{fallback}:/workspace/MEMORY.md:ro" in flags_before
+    memory.write_text("operator-approved", encoding="utf-8")
+    flags_after = sb._base_flags()
+    assert f"{memory}:/workspace/MEMORY.md:ro" in flags_after
+    assert flags_after.index(f"{tmp_path}:/workspace:rw") < flags_after.index(
+        f"{memory}:/workspace/MEMORY.md:ro"
+    )
 
 
 def test_docker_sandbox_user_maps_host_uid_gid_on_posix(

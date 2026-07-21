@@ -103,3 +103,22 @@ def test_cli_memory_approve_unknown_fail_closed(tmp_path: Path) -> None:
     ws = tmp_path / "ws"
     ws.mkdir()
     assert main(["memory", "approve", "deadbeef", "--workspace", str(ws)]) == 1
+
+
+def test_cli_memory_malformed_config_fails_without_traceback(tmp_path: Path, capsys) -> None:
+    config = tmp_path / "bad.yaml"
+    config.write_text("provider: [not-a-provider]\n", encoding="utf-8")
+    assert main(["memory", "list", "--config", str(config)]) == 1
+    assert "không đọc được" in capsys.readouterr().err
+
+
+def test_cli_memory_list_sanitizes_terminal_controls(tmp_path: Path, capsys) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    from yett.memory.review_gate import MemoryReviewGate
+
+    pid = MemoryReviewGate(ws).propose("safe\x1b[31mred")
+    assert main(["memory", "list", "--workspace", str(ws)]) == 0
+    output = capsys.readouterr().out
+    assert pid in output
+    assert "\x1b" not in output

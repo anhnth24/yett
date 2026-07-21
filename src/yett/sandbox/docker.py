@@ -22,6 +22,7 @@ import asyncio
 import os
 import shutil
 import subprocess
+from pathlib import Path
 
 from yett.config.models import SandboxCfg
 from yett.errors import UserFacingError
@@ -78,11 +79,18 @@ def _container_user() -> str:
 
 class DockerSandbox:
     def __init__(
-        self, cfg: SandboxCfg, image: str = "python:3.11-slim", mounts: dict[str, str] | None = None
+        self,
+        cfg: SandboxCfg,
+        image: str = "python:3.11-slim",
+        mounts: dict[str, str] | None = None,
+        readonly_overlays: dict[str, tuple[str, str]] | None = None,
     ) -> None:
         self._cfg = cfg
         self._image = image
         self._mounts = mounts or {}  # host_path -> container_path (read-write project mounts)
+        # container path -> (preferred host path, safe fallback file).  Resolve at each run:
+        # MEMORY.md may not exist when App starts, then appear after an operator approval.
+        self._readonly_overlays = readonly_overlays or {}
 
     def _base_flags(self) -> list[str]:
         flags = [
@@ -99,6 +107,11 @@ class DockerSandbox:
         ]
         for host, cont in self._mounts.items():
             flags += ["-v", f"{host}:{cont}:rw"]
+        for cont, (preferred, fallback) in self._readonly_overlays.items():
+            candidate = Path(preferred)
+            # Never pass a symlink to Docker as a protected overlay.
+            host = preferred if candidate.exists() and not candidate.is_symlink() else fallback
+            flags += ["-v", f"{host}:{cont}:ro"]
         return flags
 
     async def run(

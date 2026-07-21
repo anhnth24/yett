@@ -29,7 +29,7 @@ class ImmutableCore:
         # lệnh exec/ssh_exec (không biết cwd thật local/remote, và command có thể lách qua
         # redirect/interpreter/shell-lồng nên không bóc tách operand đáng tin). Xem
         # `_exec_hits_protected`.
-        self._protected_names = {p.name for p in self._protected}
+        self._protected_names = {p.name.casefold() for p in self._protected}
 
     def check(self, tool: str, args: dict) -> Decision | None:
         """Trả Decision(deny) nếu chạm hardline; None nếu không."""
@@ -63,8 +63,11 @@ class ImmutableCore:
         `_exec_hits_protected`) vì không có shell syntax cần bóc tách."""
         if not raw_path or not self._protected:
             return False
+        lexical = Path(str(raw_path))
+        if lexical.name.casefold() in self._protected_names:
+            return True
         try:
-            target = Path(str(raw_path)).resolve()
+            target = lexical.resolve()
         except (OSError, ValueError):
             return True  # path không hợp lệ/không resolve được → fail-closed, coi là chạm
         for p in self._protected:
@@ -84,7 +87,8 @@ class ImmutableCore:
         resolve()+is_relative_to chính xác, xem `_write_file_hits_protected`)."""
         if not cmd or not self._protected_names:
             return False
-        return any(name in cmd for name in self._protected_names)
+        folded = cmd.casefold()
+        return any(name in folded for name in self._protected_names)
 
     @staticmethod
     def _classify_db_query(sql: str, driver: object) -> Decision:

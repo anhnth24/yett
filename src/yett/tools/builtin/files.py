@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from yett.errors import UserFacingError
-from yett.memory.paths import is_memory_file, is_pending_staging_path
+from yett.memory.paths import is_memory_control_file, is_memory_file, is_pending_staging_path
 from yett.tools.base import ToolCtx, ToolResult
 from yett.tools.projects import ProjectScope
 
@@ -19,6 +19,8 @@ def _blocked_memory_write(path: Path) -> str | None:
         return "không được ghi thẳng file memory curated — dùng tool memory_propose (review gate)"
     if is_pending_staging_path(path):
         return "không được ghi thẳng memory/pending — dùng tool memory_propose"
+    if is_memory_control_file(path):
+        return "không được sửa metadata của memory review gate"
     return None
 
 
@@ -66,6 +68,10 @@ class WriteFileTool:
             raise UserFacingError("thiếu 'content'")
 
     async def run(self, args: dict, ctx: ToolCtx) -> ToolResult:
+        # Check the lexical path before resolution as well as the canonical result.  Otherwise
+        # a symlink named MEMORY.md can resolve to an innocuous basename and bypass this guard.
+        if why := _blocked_memory_write(Path(args["path"])):
+            raise UserFacingError(why)
         p = self._scope.resolve_in_scope(args["path"])
         if why := _blocked_memory_write(p):
             raise UserFacingError(why)

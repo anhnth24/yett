@@ -59,5 +59,6 @@ class MemoryProposeTool:
             return ToolResult.error(str(e))
         return ToolResult.success(
             f"Đã đề xuất memory id={pid} vào staging "
-            f"(chưa ghi MEMORY.md — chờ `yett memory approve {pid}`)."
+            f"(chưa ghi MEMORY.md — chờ `yett memory approve {pid}`).",
+            span_attrs={"memory_action": "proposed", "proposal_id": pid},
         )
