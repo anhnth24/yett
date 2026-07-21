@@ -71,7 +71,7 @@ def build_config(ans: Answers) -> dict:
     elif ans.provider not in PROVIDER_BASE_URLS:
         provider["base_url"] = ans.base_url or ""
 
-    egress = _egress_for(ans.provider)
+    egress = _egress_for(ans.provider, ans.base_url)
     cfg: dict = {
         "provider": provider,
         "budget": {
@@ -99,8 +99,8 @@ def build_config(ans: Answers) -> dict:
     return cfg
 
 
-def _egress_for(provider: str) -> list[str]:
-    host = PROVIDER_BASE_URLS.get(provider, "")
+def _egress_for(provider: str, base_url: str | None = None) -> list[str]:
+    host = base_url or PROVIDER_BASE_URLS.get(provider, "")
     from urllib.parse import urlparse
 
     domains = []

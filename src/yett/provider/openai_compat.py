@@ -59,7 +59,7 @@ class OpenAICompatProvider:
         status, data = await self._post(f"{self._base}/chat/completions", headers, body)
         if status != 200:
             raise ProviderError(_map_status(status), f"HTTP {status}: {str(data)[:200]}")
-        return _parse_response(data, self._model)
+        return _parse_response(data, self._model, self._name)
 
 
 def _to_openai_msg(m: Message) -> dict:
@@ -91,7 +91,7 @@ def _to_openai_tool(t: ToolSchema) -> dict:
     }
 
 
-def _parse_response(data: dict, model: str) -> ChatResult:
+def _parse_response(data: dict, model: str, provider_name: str = "") -> ChatResult:
     choice = (data.get("choices") or [{}])[0]
     msg = choice.get("message", {})
     text = msg.get("content")
@@ -117,7 +117,7 @@ def _parse_response(data: dict, model: str) -> ChatResult:
     stop_reason: _StopReason = stop_map.get(finish, "end_turn")
     return ChatResult(
         text=text, tool_calls=tool_calls, usage=usage,
-        stop_reason=stop_reason, raw_model=data.get("model", model),
+        stop_reason=stop_reason, raw_model=data.get("model", model), provider_name=provider_name,
     )
 
 

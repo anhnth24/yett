@@ -59,9 +59,16 @@ class Context:
         khớp id)."""
         self.messages.append(Message(role="assistant", content=text or "", tool_calls=list(tool_calls)))
 
-    def add_tool_result(self, call_id: str, content: str) -> None:
+    def add_tool_result(self, call_id: str, content: str, *, is_error: bool = False) -> None:
         self._tool_results[call_id] = content
-        self.messages.append(Message(role="tool", content=content, tool_call_id=call_id))
+        self.messages.append(
+            Message(
+                role="tool",
+                content=content,
+                tool_call_id=call_id,
+                tool_result_is_error=is_error,
+            )
+        )
 
     def tokens(self) -> int:
         total = 0
@@ -90,6 +97,7 @@ class Context:
                     role="tool",
                     content=f"[pruned {len(m.content)} chars — tool result {m.tool_call_id}]",
                     tool_call_id=m.tool_call_id,
+                    tool_result_is_error=m.tool_result_is_error,
                 )
                 self._prune_matching_tool_call(m.tool_call_id)
                 pruned += 1
@@ -110,7 +118,11 @@ class Context:
                 for tc in m.tool_calls
             ]
             self.messages[i] = Message(
-                role=m.role, content=m.content, tool_call_id=m.tool_call_id, tool_calls=new_calls,
+                role=m.role,
+                content=m.content,
+                tool_call_id=m.tool_call_id,
+                tool_calls=new_calls,
+                tool_result_is_error=m.tool_result_is_error,
             )
             return
 
