@@ -34,7 +34,7 @@ class _EchoTool:
         return None
 
     async def run(self, args: dict, ctx) -> ToolResult:
-        return ToolResult.success("ok")
+        return ToolResult.error("simulated tool failure")
 
 
 def _tool_use_response(call_id: str, name: str) -> dict:
@@ -115,6 +115,7 @@ async def test_anthropic_loop_system_prompt_and_tool_result_ordering(tmp_path) -
         }
         for tr in results:
             assert tr["tool_use_id"] in prev_ids
+            assert tr["is_error"] is True
 
     store.close()
     ckpt.close()

@@ -75,6 +75,7 @@ async def test_request_shape_headers_and_endpoint() -> None:
     assert captured["headers"]["Content-Type"] == "application/json"
     assert captured["body"]["model"] == "claude-haiku-4-5"
     assert captured["body"]["max_tokens"] == 4096
+    assert "temperature" not in captured["body"]
     assert "Authorization" not in captured["headers"]
 
 
@@ -210,6 +211,39 @@ async def test_assistant_tool_use_then_user_tool_result_conversion() -> None:
     assert captured["body"]["system"] == "sys"
 
 
+async def test_failed_tool_result_sets_anthropic_is_error() -> None:
+    captured: dict = {}
+
+    async def transport(url, headers, body):
+        captured["body"] = body
+        return 200, _ok(text="handled")
+
+    await _provider(transport).chat(
+        [
+            Message(
+                role="assistant",
+                content="",
+                tool_calls=[ToolCall(id="toolu_1", name="exec", args={"cmd": "false"})],
+            ),
+            Message(
+                role="tool",
+                content="exit 1",
+                tool_call_id="toolu_1",
+                tool_result_is_error=True,
+            ),
+        ],
+        [],
+    )
+    assert captured["body"]["messages"][1]["content"] == [
+        {
+            "type": "tool_result",
+            "tool_use_id": "toolu_1",
+            "content": "exit 1",
+            "is_error": True,
+        }
+    ]
+
+
 async def test_text_response_and_usage_parsed() -> None:
     async def transport(url, headers, body):
         return 200, _ok(
@@ -225,6 +259,7 @@ async def test_text_response_and_usage_parsed() -> None:
     assert res.usage.output_tokens == 20
     assert res.usage.cache_read_tokens == 40
     assert res.raw_model == "claude-haiku-4-5"
+    assert res.provider_name == "anthropic"
     assert res.tool_calls == []
 
 
@@ -251,6 +286,25 @@ async def test_tool_use_response_parsed() -> None:
     assert res.tool_calls[0].id == "toolu_abc"
     assert res.tool_calls[0].name == "exec"
     assert res.tool_calls[0].args == {"cmd": "ls"}
+
+
+@pytest.mark.parametrize(
+    ("api_reason", "canonical_reason"),
+    [
+        ("end_turn", "end_turn"),
+        ("stop_sequence", "end_turn"),
+        ("max_tokens", "max_tokens"),
+        ("refusal", "refusal"),
+    ],
+)
+async def test_stop_reasons_are_mapped_exactly(
+    api_reason: str, canonical_reason: str
+) -> None:
+    async def transport(url, headers, body):
+        return 200, _ok(text="x", stop=api_reason)
+
+    res = await _provider(transport).chat([Message(role="user", content="hi")], [])
+    assert res.stop_reason == canonical_reason
 
 
 async def test_usage_feeds_cost_ledger() -> None:
@@ -284,10 +338,13 @@ async def test_usage_feeds_cost_ledger() -> None:
     "status,reason",
     [
         (401, FailReason.AUTH),
+        (402, FailReason.AUTH),
         (403, FailReason.AUTH),
+        (404, FailReason.BAD_REQUEST),
         (429, FailReason.RATE_LIMIT),
         (529, FailReason.OVERLOADED),
         (408, FailReason.TIMEOUT),
+        (504, FailReason.TIMEOUT),
         (500, FailReason.SERVER_5XX),
         (502, FailReason.SERVER_5XX),
         (400, FailReason.BAD_REQUEST),
@@ -319,6 +376,21 @@ async def test_context_overflow_classification() -> None:
     assert ei.value.reason == FailReason.CONTEXT_OVERFLOW
 
 
+async def test_invalid_output_max_tokens_is_not_context_overflow() -> None:
+    async def transport(url, headers, body):
+        return 400, {
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "message": "max_tokens 200000 exceeds the maximum output token limit of 128000",
+            },
+        }
+
+    with pytest.raises(ProviderError) as ei:
+        await _provider(transport).chat([Message(role="user", content="hi")], [])
+    assert ei.value.reason == FailReason.BAD_REQUEST
+
+
 async def test_timeout_from_transport_propagates_for_retry() -> None:
     async def transport(url, headers, body):
         raise ProviderError(FailReason.TIMEOUT, "request timed out")
@@ -329,14 +401,108 @@ async def test_timeout_from_transport_propagates_for_retry() -> None:
     assert ei.value.reason == FailReason.TIMEOUT
 
 
-async def test_malformed_response_raises_bad_request() -> None:
+@pytest.mark.parametrize(
+    ("error", "reason"),
+    [
+        (TimeoutError("slow"), FailReason.TIMEOUT),
+        (OSError("connection reset"), FailReason.NETWORK),
+    ],
+)
+async def test_native_transport_exceptions_are_canonical(error: Exception, reason: FailReason) -> None:
+    async def transport(url, headers, body):
+        raise error
+
+    with pytest.raises(ProviderError) as ei:
+        await _provider(transport).chat([Message(role="user", content="hi")], [])
+    assert ei.value.reason == reason
+
+
+async def test_default_transport_enforces_configured_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.request
+
+    def fake_urlopen(request, *, timeout):
+        assert timeout == 0.25
+        raise TimeoutError("slow")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    p = AnthropicProvider(model="claude-haiku-4-5", api_key=SECRET, timeout_sec=0.25)
+    with pytest.raises(ProviderError) as ei:
+        await p.chat([Message(role="user", content="hi")], [])
+    assert ei.value.reason == FailReason.TIMEOUT
+
+
+async def test_default_transport_classifies_malformed_json_as_server_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.request
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self) -> bytes:
+            return b"not-json"
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda request, timeout: Response())
+    p = AnthropicProvider(model="claude-haiku-4-5", api_key=SECRET)
+    with pytest.raises(ProviderError) as ei:
+        await p.chat([Message(role="user", content="hi")], [])
+    assert ei.value.reason == FailReason.SERVER_5XX
+
+
+async def test_malformed_response_is_retryable_server_failure() -> None:
     async def transport(url, headers, body):
         return 200, {"model": "x", "stop_reason": "end_turn"}  # thiếu content list
 
     p = _provider(transport)
     with pytest.raises(ProviderError) as ei:
         await p.chat([Message(role="user", content="hi")], [])
-    assert ei.value.reason == FailReason.BAD_REQUEST
+    assert ei.value.reason == FailReason.SERVER_5XX
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "type": "message",
+            "role": "assistant",
+            "model": "x",
+            "content": [{"type": "tool_use", "id": "toolu_1", "name": "exec", "input": "{"}],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        },
+        {
+            "type": "message",
+            "role": "assistant",
+            "model": "x",
+            "content": [{"type": "tool_use", "id": "toolu_1", "name": "exec", "input": {}}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        },
+        {
+            "type": "message",
+            "role": "assistant",
+            "model": "x",
+            "content": [],
+            "stop_reason": "pause_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        },
+    ],
+)
+async def test_protocol_invalid_success_is_retryable_server_failure(payload: dict) -> None:
+    async def transport(url, headers, body):
+        return 200, payload
+
+    with pytest.raises(ProviderError) as ei:
+        await _provider(transport).chat([Message(role="user", content="hi")], [])
+    assert ei.value.reason == FailReason.SERVER_5XX
 
 
 async def test_secret_not_disclosed_in_error_message() -> None:
@@ -360,6 +526,70 @@ async def test_secret_not_in_malformed_payload_text() -> None:
     with pytest.raises(ProviderError) as ei:
         await p.chat([Message(role="user", content="hi")], [])
     assert SECRET not in str(ei.value)
+
+
+async def test_secret_crossing_error_preview_boundary_is_fully_redacted() -> None:
+    async def transport(url, headers, body):
+        return 401, {"error": {"message": "x" * 185 + SECRET}}
+
+    with pytest.raises(ProviderError) as ei:
+        await _provider(transport).chat([Message(role="user", content="hi")], [])
+    assert SECRET not in str(ei.value)
+    assert SECRET[:8] not in str(ei.value)
+
+
+async def test_tool_result_without_id_is_rejected_before_network() -> None:
+    called = False
+
+    async def transport(url, headers, body):
+        nonlocal called
+        called = True
+        return 200, _ok(text="unexpected")
+
+    with pytest.raises(ProviderError) as ei:
+        await _provider(transport).chat([Message(role="tool", content="oops")], [])
+    assert ei.value.reason == FailReason.BAD_REQUEST
+    assert not called
+
+
+async def test_unmatched_or_missing_tool_results_are_rejected_before_network() -> None:
+    async def transport(url, headers, body):
+        return 200, _ok(text="unexpected")
+
+    assistant = Message(
+        role="assistant",
+        content="",
+        tool_calls=[ToolCall(id="toolu_1", name="exec", args={})],
+    )
+    with pytest.raises(ProviderError, match="no matching"):
+        await _provider(transport).chat(
+            [assistant, Message(role="tool", content="x", tool_call_id="wrong")],
+            [],
+        )
+    with pytest.raises(ProviderError, match="missing tool results"):
+        await _provider(transport).chat([assistant], [])
+
+
+async def test_non_json_tool_args_are_rejected_before_network() -> None:
+    called = False
+
+    async def transport(url, headers, body):
+        nonlocal called
+        called = True
+        return 200, _ok(text="unexpected")
+
+    message = Message(
+        role="assistant",
+        content="",
+        tool_calls=[ToolCall(id="toolu_1", name="exec", args={"value": float("nan")})],
+    )
+    with pytest.raises(ProviderError) as ei:
+        await _provider(transport).chat(
+            [message, Message(role="tool", content="x", tool_call_id="toolu_1")],
+            [],
+        )
+    assert ei.value.reason == FailReason.BAD_REQUEST
+    assert not called
 
 
 def test_factory_builds_anthropic_from_secret_store() -> None:

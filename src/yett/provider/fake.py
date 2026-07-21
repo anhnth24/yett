@@ -6,6 +6,8 @@ không gọi mạng. Đây là cách chứng minh no-egress trong test.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from yett.provider.base import ChatResult, Message, ToolCall, ToolSchema, Usage
 
 
@@ -28,20 +30,21 @@ class FakeProvider:
         if not self._script:
             return ChatResult(
                 text="(hết kịch bản)", tool_calls=[], usage=Usage(0, 0),
-                stop_reason="end_turn", raw_model=self._model,
+                stop_reason="end_turn", raw_model=self._model, provider_name=self.name(),
             )
-        return self._script.pop(0)
+        result = self._script.pop(0)
+        return result if result.provider_name else replace(result, provider_name=self.name())
 
 
 def text_result(text: str, *, tokens: tuple[int, int] = (10, 5)) -> ChatResult:
     return ChatResult(
         text=text, tool_calls=[], usage=Usage(tokens[0], tokens[1]),
-        stop_reason="end_turn", raw_model="fake-1",
+        stop_reason="end_turn", raw_model="fake-1", provider_name="fake",
     )
 
 
 def tool_result(call_id: str, name: str, args: dict, *, tokens: tuple[int, int] = (10, 5)) -> ChatResult:
     return ChatResult(
         text=None, tool_calls=[ToolCall(call_id, name, args)], usage=Usage(tokens[0], tokens[1]),
-        stop_reason="tool_use", raw_model="fake-1",
+        stop_reason="tool_use", raw_model="fake-1", provider_name="fake",
     )

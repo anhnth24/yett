@@ -96,7 +96,9 @@ class AgentLoop:
             SpanKind.AGENT, "turn", start_ts=self._clock(), session_key=session_key
         )
         completed: list[str] = []  # id trong PHẠM VI lần chạy này (trả về TurnResult)
-        completed_sigs: dict[str, str] = {}  # RT-2: chữ ký ổn định -> kết quả (idempotency)
+        # RT-2: chữ ký ổn định -> kết quả + trạng thái lỗi (idempotency).
+        # Giá trị string cũ vẫn được đọc khi resume checkpoint từ phiên bản trước.
+        completed_sigs: dict[str, object] = {}
 
         # RT-2/RT-3: resume — "running" (crash giữa turn) HOẶC "canceled" (hủy sạch) đều
         # khôi phục được: nạp lại TOÀN BỘ lịch sử message (không chỉ id) để loop không phải
@@ -149,7 +151,7 @@ class AgentLoop:
                     continue
                 self._tracer.end_span(
                     span, end_ts=self._clock(),
-                    provider=self._router_name(), model=res.raw_model,
+                    provider=res.provider_name or self._router_name(), model=res.raw_model,
                     input_tokens=res.usage.input_tokens, output_tokens=res.usage.output_tokens,
                     cost_usd=self._cost_fn(res),
                 )
@@ -204,7 +206,7 @@ class AgentLoop:
         tc: ToolCall,
         ctx: Context,
         completed: list[str],
-        completed_sigs: dict[str, str],
+        completed_sigs: dict[str, object],
         *,
         session_ctx,
         root,
@@ -229,7 +231,14 @@ class AgentLoop:
         """
         sig = tool_call_signature(tc.name, tc.args)
         if consult_cache and sig in completed_sigs:
-            ctx.add_tool_result(tc.id, completed_sigs[sig])
+            cached = completed_sigs[sig]
+            if isinstance(cached, dict):
+                content = str(cached.get("content", ""))
+                is_error = bool(cached.get("is_error", False))
+            else:
+                content = str(cached)
+                is_error = False
+            ctx.add_tool_result(tc.id, content, is_error=is_error)
             completed.append(tc.id)
         else:
             tspan = self._tracer.start_span(
@@ -249,9 +258,9 @@ class AgentLoop:
             self._tracer.end_span(
                 tspan, end_ts=self._clock(), is_error=result.is_error, **ledger
             )
-            ctx.add_tool_result(tc.id, result.content)
+            ctx.add_tool_result(tc.id, result.content, is_error=result.is_error)
             completed.append(tc.id)
-            completed_sigs[sig] = result.content
+            completed_sigs[sig] = {"content": result.content, "is_error": result.is_error}
         self._ckpt.save(
             session_key, turn_id, iteration,
             {"history": serialize_messages(ctx.messages), "completed_sigs": completed_sigs},

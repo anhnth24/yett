@@ -16,7 +16,7 @@ class ProviderCfg(BaseModel):
     # Cách 2 (tiện, local): api_key = dán thẳng key vào đây. config/harness.yaml đã gitignored.
     api_key: str = ""
     base_url: str | None = None
-    max_retries: int = 4
+    max_retries: int = Field(default=4, ge=0)
 
 
 class BudgetCfg(BaseModel):

@@ -279,7 +279,9 @@ class App:
         router = FailoverRouter(provider, fallback, max_retries=cfg.provider.max_retries)
 
         def cost_fn(res: ChatResult) -> float:
-            return compute_cost(provider.name(), res.raw_model, res.usage, self._pricing)
+            return compute_cost(
+                res.provider_name or provider.name(), res.raw_model, res.usage, self._pricing
+            )
 
         self._loop_cfg = LoopConfig(
             max_iterations=cfg.budget.max_loop_iterations,
