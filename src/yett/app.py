@@ -23,6 +23,7 @@ from yett.memory.paths import (
     MEMORY_AUDIT_FILENAME,
     MEMORY_FILENAME,
     MEMORY_LOCK_FILENAME,
+    PENDING_PARTS,
 )
 from yett.memory.review_gate import MemoryReviewGate
 from yett.memory.session import SessionStore
@@ -258,7 +259,9 @@ class App:
         # exec/ssh/db, không allowlist/rule nào đảo được. Protected = file config harness (chính
         # sách của agent) khi biết đường dẫn; luôn phủ hardline lệnh/SQL kể cả khi rỗng.
         # MEMORY.md cũng protected: agent không write_file/exec ghi thẳng — chỉ merge qua
-        # MemoryReviewGate.approve (ngoài tool path).
+        # MemoryReviewGate.approve (ngoài tool path). Staging + lock/audit metadata cũng là
+        # control-plane state: protect them from exec in local/dev mode as defense in depth
+        # (Docker additionally overlays all four paths read-only).
         protected: list[Path] = []
         if config_path is not None:
             try:
@@ -266,7 +269,15 @@ class App:
             except (OSError, ValueError):
                 pass
         try:
-            protected.append((Path(cfg.workspace_root) / MEMORY_FILENAME).resolve())
+            memory_root = Path(cfg.workspace_root)
+            protected.extend(
+                [
+                    (memory_root / MEMORY_FILENAME).resolve(),
+                    memory_root.joinpath(*PENDING_PARTS).resolve(),
+                    (memory_root / "memory" / MEMORY_AUDIT_FILENAME).resolve(),
+                    (memory_root / MEMORY_LOCK_FILENAME).resolve(),
+                ]
+            )
         except (OSError, ValueError):
             pass
         self.gate: PolicyGate = _ImmutableFirstGate(

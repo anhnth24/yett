@@ -35,6 +35,7 @@ _GENESIS = "0" * 64
 _MARKER_PREFIX = "<!-- yett-memory-proposal:"
 _THREAD_LOCKS: dict[str, threading.RLock] = {}
 _THREAD_LOCKS_GUARD = threading.Lock()
+_FileSnapshot = tuple[int, int, int, str]  # device, inode, permission mode, content hash
 
 
 class MemoryReviewError(UserFacingError, ValueError):
@@ -110,6 +111,7 @@ class MemoryReviewGate:
                     )
                 except Exception:
                     os.unlink(f"{pid}.md", dir_fd=pending_fd)
+                    os.fsync(pending_fd)
                     raise
                 return pid
             finally:
@@ -144,33 +146,65 @@ class MemoryReviewGate:
         with self._transaction() as root_fd:
             memory_fd, pending_fd = self._storage_fds(root_fd)
             try:
-                chunk = self._read_regular_at(pending_fd, name)
-                if chunk is None:
+                staged = self._read_regular_at(pending_fd, name)
+                if staged is None:
                     return False
-                chunk = redact(chunk).strip()
+                chunk = redact(staged).strip()
                 if not chunk or len(chunk) > _MAX_CONTENT_CHARS:
                     raise MemoryReviewError("đề xuất staging rỗng/quá dài hoặc không hợp lệ")
                 audit = self._audit_state(memory_fd)
-                previous = self._read_regular_at(root_fd, MEMORY_FILENAME)
+                lifecycle = self._verify_pending_audit(audit[0], pid, staged)
+                previous_item = self._read_regular_snapshot_at(root_fd, MEMORY_FILENAME)
+                previous = previous_item[0] if previous_item is not None else None
+                previous_snapshot = previous_item[1] if previous_item is not None else None
                 current = previous or ""
-                merged = current
-                if marker not in current:
-                    entry = f"{marker}\n{chunk}"
+                entry = f"{marker}\n{chunk}"
+                if lifecycle == "approved":
+                    if entry not in current:
+                        raise MemoryReviewError(
+                            "audit báo đã duyệt nhưng MEMORY.md không có nội dung tương ứng"
+                        )
+                    os.unlink(name, dir_fd=pending_fd)
+                    os.fsync(pending_fd)
+                    return True
+                if lifecycle != "proposed":
+                    raise MemoryReviewError("đề xuất đã kết thúc; không thể duyệt")
+                if marker in current and entry not in current:
+                    raise MemoryReviewError(
+                        "marker đề xuất trong MEMORY.md không khớp nội dung audit"
+                    )
+                memory_changed = False
+                merged_snapshot = previous_snapshot
+                if entry not in current:
                     merged = current + ("\n\n" if current else "") + entry
-                    self._atomic_write_at(root_fd, MEMORY_FILENAME, merged)
-                os.unlink(name, dir_fd=pending_fd)
+                    merged_snapshot = self._atomic_write_at(
+                        root_fd, MEMORY_FILENAME, merged, expected=previous_snapshot
+                    )
+                    memory_changed = True
                 try:
                     self._append_audit(
                         memory_fd, audit, actor=actor, action="approved", pid=pid, content=chunk
                     )
                 except Exception:
-                    # Keep approval retryable and restore curated memory if audit cannot commit.
-                    self._create_named_proposal(pending_fd, name, chunk)
-                    if previous is None:
-                        os.unlink(MEMORY_FILENAME, dir_fd=root_fd)
-                    else:
-                        self._atomic_write_at(root_fd, MEMORY_FILENAME, previous)
+                    # Proposal is still staged; restore curated memory if audit cannot commit.
+                    if memory_changed:
+                        assert merged_snapshot is not None
+                        if previous is None:
+                            self._unlink_if_snapshot(
+                                root_fd, MEMORY_FILENAME, expected=merged_snapshot
+                            )
+                        else:
+                            self._atomic_write_at(
+                                root_fd,
+                                MEMORY_FILENAME,
+                                previous,
+                                expected=merged_snapshot,
+                            )
                     raise
+                # Audit is the durable commit record.  Consume staging last so a crash before
+                # this unlink is recoverable by the terminal-lifecycle branch above.
+                os.unlink(name, dir_fd=pending_fd)
+                os.fsync(pending_fd)
                 return True
             finally:
                 os.close(pending_fd)
@@ -187,14 +221,15 @@ class MemoryReviewGate:
                 if chunk is None:
                     return False
                 audit = self._audit_state(memory_fd)
-                os.unlink(name, dir_fd=pending_fd)
-                try:
+                lifecycle = self._verify_pending_audit(audit[0], pid, chunk)
+                if lifecycle == "approved":
+                    raise MemoryReviewError("đề xuất đã được duyệt; không thể từ chối")
+                if lifecycle == "proposed":
                     self._append_audit(
                         memory_fd, audit, actor=actor, action="rejected", pid=pid, content=chunk
                     )
-                except Exception:
-                    self._create_named_proposal(pending_fd, name, chunk)
-                    raise
+                os.unlink(name, dir_fd=pending_fd)
+                os.fsync(pending_fd)
                 return True
             finally:
                 os.close(pending_fd)
@@ -309,9 +344,18 @@ class MemoryReviewGate:
                 os.fsync(fd)
         finally:
             os.close(fd)
+        os.fsync(pending_fd)
+
+    @classmethod
+    def _read_regular_at(cls, dir_fd: int, name: str) -> str | None:
+        item = cls._read_regular_snapshot_at(dir_fd, name)
+        return item[0] if item is not None else None
 
     @staticmethod
-    def _read_regular_at(dir_fd: int, name: str) -> str | None:
+    def _read_regular_snapshot_at(
+        dir_fd: int, name: str
+    ) -> tuple[str, _FileSnapshot] | None:
+        """Read one stable regular-file version and return its identity/content snapshot."""
         try:
             fd = os.open(name, _flags(), dir_fd=dir_fd)
         except FileNotFoundError:
@@ -319,7 +363,8 @@ class MemoryReviewGate:
         except OSError as exc:
             raise MemoryReviewError(f"từ chối đọc file memory không an toàn '{name}': {exc}") from exc
         try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode):
                 raise MemoryReviewError(f"file memory '{name}' không phải regular file")
             chunks: list[bytes] = []
             remaining = _MAX_CONTROL_FILE_BYTES + 1
@@ -332,25 +377,60 @@ class MemoryReviewGate:
             data = b"".join(chunks)
             if len(data) > _MAX_CONTROL_FILE_BYTES:
                 raise MemoryReviewError(f"file memory '{name}' quá lớn; từ chối xử lý")
-            return data.decode("utf-8")
+            after = os.fstat(fd)
+            before_identity = (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+                before.st_mtime_ns,
+                before.st_ctime_ns,
+                stat.S_IMODE(before.st_mode),
+            )
+            after_identity = (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+                stat.S_IMODE(after.st_mode),
+            )
+            if before_identity != after_identity:
+                raise MemoryReviewError(
+                    f"file '{name}' đổi trong lúc đọc; từ chối TOCTOU"
+                )
+            snapshot: _FileSnapshot = (
+                after.st_dev,
+                after.st_ino,
+                stat.S_IMODE(after.st_mode),
+                hashlib.sha256(data).hexdigest(),
+            )
+            return data.decode("utf-8"), snapshot
         finally:
             os.close(fd)
 
-    @staticmethod
-    def _atomic_write_at(dir_fd: int, name: str, text: str) -> None:
-        existing: tuple[int, int, int] | None = None
-        try:
-            st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-            if not stat.S_ISREG(st.st_mode):
-                raise MemoryReviewError(f"từ chối thay file memory không phải regular file: {name}")
-            existing = (st.st_dev, st.st_ino, stat.S_IMODE(st.st_mode))
-        except FileNotFoundError:
-            pass
+    @classmethod
+    def _atomic_write_at(
+        cls,
+        dir_fd: int,
+        name: str,
+        text: str,
+        *,
+        expected: _FileSnapshot | None,
+    ) -> _FileSnapshot:
+        """Replace only the exact version read by the caller.
+
+        Comparing the content hash as well as inode closes the lost-update gap where an
+        uncooperative writer edits a file in place without replacing its inode.
+        """
+        current_item = cls._read_regular_snapshot_at(dir_fd, name)
+        current = current_item[1] if current_item is not None else None
+        if current != expected:
+            raise MemoryReviewError(f"file '{name}' đổi trong lúc duyệt; từ chối TOCTOU")
         tmp = f".{name}.{uuid.uuid4().hex}.tmp"
         fd = os.open(
             tmp,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-            existing[2] if existing else 0o600,
+            current[2] if current else 0o600,
             dir_fd=dir_fd,
         )
         try:
@@ -358,16 +438,18 @@ class MemoryReviewGate:
                 stream.write(text.encode("utf-8"))
                 stream.flush()
                 os.fsync(fd)
-            try:
-                now = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-                current = (now.st_dev, now.st_ino)
-            except FileNotFoundError:
-                current = None
-            expected = existing[:2] if existing else None
-            if current != expected:
+            latest_item = cls._read_regular_snapshot_at(dir_fd, name)
+            latest = latest_item[1] if latest_item is not None else None
+            if latest != current:
                 raise MemoryReviewError(f"file '{name}' đổi trong lúc duyệt; từ chối TOCTOU")
             os.replace(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
             os.fsync(dir_fd)
+            replaced = cls._read_regular_snapshot_at(dir_fd, name)
+            if replaced is None or replaced[0] != text:
+                raise MemoryReviewError(
+                    f"file '{name}' đổi ngay sau khi ghi; từ chối TOCTOU"
+                )
+            return replaced[1]
         finally:
             os.close(fd)
             try:
@@ -375,8 +457,21 @@ class MemoryReviewGate:
             except FileNotFoundError:
                 pass
 
-    def _audit_state(self, memory_fd: int) -> tuple[str, str]:
-        text = self._read_regular_at(memory_fd, MEMORY_AUDIT_FILENAME) or ""
+    @classmethod
+    def _unlink_if_snapshot(
+        cls, dir_fd: int, name: str, *, expected: _FileSnapshot
+    ) -> None:
+        item = cls._read_regular_snapshot_at(dir_fd, name)
+        current = item[1] if item is not None else None
+        if current != expected:
+            raise MemoryReviewError(f"file '{name}' đổi trong lúc rollback; từ chối TOCTOU")
+        os.unlink(name, dir_fd=dir_fd)
+        os.fsync(dir_fd)
+
+    def _audit_state(self, memory_fd: int) -> tuple[str, str, _FileSnapshot | None]:
+        item = self._read_regular_snapshot_at(memory_fd, MEMORY_AUDIT_FILENAME)
+        text = item[0] if item is not None else ""
+        snapshot = item[1] if item is not None else None
         prev = _GENESIS
         for line in text.splitlines():
             if not line.strip():
@@ -393,19 +488,42 @@ class MemoryReviewGate:
             ):
                 raise MemoryReviewError("memory review audit hash-chain bị hỏng; từ chối mutation")
             prev = record_hash
-        return text, prev
+        return text, prev, snapshot
+
+    @staticmethod
+    def _verify_pending_audit(audit_text: str, pid: str, content: str) -> str:
+        """Require a pending file to match its latest audited proposal exactly."""
+        latest: dict | None = None
+        for line in audit_text.splitlines():
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            if isinstance(record, dict) and record.get("proposal_id") == pid:
+                latest = record
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        if (
+            latest is None
+            or latest.get("content_sha256") != digest
+        ):
+            raise MemoryReviewError(
+                "đề xuất staging không khớp audit hoặc đã kết thúc; từ chối mutation"
+            )
+        action = latest.get("action")
+        if not isinstance(action, str) or action not in {"proposed", "approved", "rejected"}:
+            raise MemoryReviewError("memory review audit có lifecycle không hợp lệ")
+        return action
 
     def _append_audit(
         self,
         memory_fd: int,
-        state: tuple[str, str],
+        state: tuple[str, str, _FileSnapshot | None],
         *,
         actor: str,
         action: str,
         pid: str,
         content: str,
     ) -> None:
-        text, prev = state
+        text, prev, snapshot = state
         body = {
             "ts": self._clock(),
             "actor": actor,
@@ -417,4 +535,6 @@ class MemoryReviewGate:
         record = {**body, "hash": _entry_hash(prev, body)}
         updated = text + ("" if not text or text.endswith("\n") else "\n")
         updated += json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
-        self._atomic_write_at(memory_fd, MEMORY_AUDIT_FILENAME, updated)
+        self._atomic_write_at(
+            memory_fd, MEMORY_AUDIT_FILENAME, updated, expected=snapshot
+        )

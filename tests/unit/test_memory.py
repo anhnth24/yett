@@ -266,6 +266,22 @@ def test_review_gate_redacts_before_disk_even_when_called_directly(tmp_path: Pat
     assert "[REDACTED]" in raw
 
 
+@pytest.mark.parametrize("action", ["approve", "reject"])
+def test_review_gate_rejects_pending_content_tampered_after_proposal(
+    tmp_path: Path, action: str
+) -> None:
+    gate = MemoryReviewGate(tmp_path)
+    pid = gate.propose("audited original")
+    staged = gate.pending_dir / f"{pid}.md"
+    staged.write_text("tampered replacement", encoding="utf-8")
+
+    with pytest.raises(MemoryReviewError, match="khớp audit"):
+        getattr(gate, action)(pid)
+
+    assert staged.read_text(encoding="utf-8") == "tampered replacement"
+    assert not (tmp_path / "MEMORY.md").exists()
+
+
 def test_review_gate_rejects_pending_directory_symlink(tmp_path: Path) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -367,35 +383,69 @@ def test_review_gate_rolls_back_approval_when_audit_commit_fails(
     assert gate.list_pending()[0][0] == pid
 
 
-def test_review_gate_detects_memory_replacement_toctou(
+def test_review_gate_recovers_when_staging_unlink_fails_after_commit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import yett.memory.review_gate as review_mod
 
+    gate = MemoryReviewGate(tmp_path)
+    pid = gate.propose("durable approval")
+    staged_name = f"{pid}.md"
+    real_unlink = review_mod.os.unlink
+    failed = False
+
+    def fail_once(path, *args, **kwargs):
+        nonlocal failed
+        if path == staged_name and not failed:
+            failed = True
+            raise OSError("simulated crash before staging cleanup")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(review_mod.os, "unlink", fail_once)
+    with pytest.raises(MemoryReviewError, match="thất bại an toàn"):
+        gate.approve(pid)
+
+    # MEMORY + audit committed, staging remains.  Retry consumes it without a duplicate merge
+    # or duplicate terminal audit record.
+    assert (gate.pending_dir / staged_name).exists()
+    assert gate.approve(pid)
+    memory = (tmp_path / "MEMORY.md").read_text(encoding="utf-8")
+    assert memory.count("durable approval") == 1
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "memory" / "review-audit.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert [row["action"] for row in rows] == ["proposed", "approved"]
+
+
+def test_review_gate_detects_memory_in_place_write_toctou(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     (tmp_path / "MEMORY.md").write_text("base", encoding="utf-8")
     gate = MemoryReviewGate(tmp_path)
     pid = gate.propose("new entry")
-    real_stat = review_mod.os.stat
+    real_read = MemoryReviewGate._read_regular_snapshot_at
     calls = 0
 
-    def racing_stat(path, *args, **kwargs):
+    def racing_read(dir_fd: int, name: str):
         nonlocal calls
-        if path == "MEMORY.md" and kwargs.get("dir_fd") is not None:
+        if name == "MEMORY.md":
             calls += 1
             if calls == 2:
-                dir_fd = kwargs["dir_fd"]
                 fd = os.open(
-                    ".racer",
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                    0o600,
+                    name,
+                    os.O_WRONLY | os.O_TRUNC,
                     dir_fd=dir_fd,
                 )
                 os.write(fd, b"raced")
                 os.close(fd)
-                os.replace(".racer", "MEMORY.md", src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
-        return real_stat(path, *args, **kwargs)
+        return real_read(dir_fd, name)
 
-    monkeypatch.setattr(review_mod.os, "stat", racing_stat)
+    monkeypatch.setattr(
+        MemoryReviewGate, "_read_regular_snapshot_at", staticmethod(racing_read)
+    )
     with pytest.raises(MemoryReviewError, match="TOCTOU"):
         gate.approve(pid)
     assert (tmp_path / "MEMORY.md").read_text(encoding="utf-8") == "raced"

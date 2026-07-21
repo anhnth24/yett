@@ -6,6 +6,8 @@ import asyncio
 import itertools
 from pathlib import Path
 
+import pytest
+
 from yett.app import App
 from yett.cli import main
 from yett.config.models import (
@@ -70,6 +72,40 @@ def test_app_write_file_memory_md_denied_by_immutable(tmp_path: Path) -> None:
         dec = app.gate.evaluate(
             "write_file",
             {"path": str(tmp_path / "ws" / "MEMORY.md"), "content": "x"},
+            type("C", (), {"session_key": "main"})(),
+        )
+        assert dec.verdict == "deny" and dec.rule_id == "IMMUTABLE_WRITE"
+    finally:
+        app.close()
+
+
+@pytest.mark.parametrize(
+    "control_path",
+    [
+        "memory/pending/forged.md",
+        "memory/review-audit.jsonl",
+        ".yett-memory-review.lock",
+    ],
+)
+def test_app_exec_cannot_direct_write_memory_control_state(
+    tmp_path: Path, control_path: str
+) -> None:
+    (tmp_path / "ws").mkdir(parents=True)
+    sec = SecurityCfg(
+        allowlist=[ToolRule(tool="exec", arg_patterns={"cmd": ".*"}, effect="allow")]
+    )
+    app = App(
+        provider=FakeProvider([text_result("ok")]),
+        cfg=_cfg(tmp_path, security=sec),
+        state_dir=tmp_path / "st",
+        secrets=InMemorySecretStore(),
+        clock=_clock(),
+    )
+    try:
+        command = f"python -c \"open('{control_path}','w').write('forged')\""
+        dec = app.gate.evaluate(
+            "exec",
+            {"cmd": command},
             type("C", (), {"session_key": "main"})(),
         )
         assert dec.verdict == "deny" and dec.rule_id == "IMMUTABLE_WRITE"
