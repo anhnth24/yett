@@ -88,6 +88,7 @@ def build_config(ans: Answers) -> dict:
                 {"tool": "write_file", "effect": "allow"},
                 {"tool": "exec", "arg_patterns": {"cmd": "^(git|ls|cat|grep|python|pytest|npm|go) "},
                  "effect": "allow"},
+                {"tool": "memory_propose", "effect": "allow"},
             ],
         },
         "secret_backend": "file",

@@ -137,7 +137,12 @@ async def execute_tool(
         # đã redact) CHƯA từng qua redact/injection-scan. Lọc LẠI trước khi trả về (context sẽ
         # checkpoint chuỗi này) thay vì trả thẳng `mutated_result` như trước.
         result = filter_apply(
-            ToolResult(ok=result.ok, content=mutated, is_error=result.is_error),
+            ToolResult(
+                ok=result.ok,
+                content=mutated,
+                is_error=result.is_error,
+                span_attrs=dict(result.span_attrs),
+            ),
             untrusted=name in _UNTRUSTED_TOOLS,
         )
     return result

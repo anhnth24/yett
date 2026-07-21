@@ -242,7 +242,13 @@ class AgentLoop:
                 approver=self._approver, auditor=self._auditor, hooks=self._hooks,
                 allowed_tools=allowed_tools,
             )
-            self._tracer.end_span(tspan, end_ts=self._clock(), is_error=result.is_error)
+            # span_attrs từ tool (vd cost_usd cho web_search) — KHÔNG ghi đè is_error.
+            ledger = {
+                k: v for k, v in result.span_attrs.items() if k != "is_error"
+            }
+            self._tracer.end_span(
+                tspan, end_ts=self._clock(), is_error=result.is_error, **ledger
+            )
             ctx.add_tool_result(tc.id, result.content)
             completed.append(tc.id)
             completed_sigs[sig] = result.content

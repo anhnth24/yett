@@ -10,9 +10,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from yett.core.context import estimate_tokens
+from yett.memory.paths import MEMORY_FILENAME
 
 # Thứ tự ưu tiên nạp (cao xuống thấp) — khi vượt budget, cắt từ cuối danh sách.
-_LOAD_ORDER = ["SOUL.md", "AGENTS.md", "TOOLS.md", "MEMORY.md"]
+_LOAD_ORDER = ["SOUL.md", "AGENTS.md", "TOOLS.md", MEMORY_FILENAME]
 
 
 @dataclass

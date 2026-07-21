@@ -64,3 +64,8 @@ mistral:
 groq:
   llama-4-maverick: { input_per_mtok: 0.15, output_per_mtok: 0.60 }  # [UNVERIFIED]
   "*":              { input_per_mtok: 0.0,  output_per_mtok: 0.0 }
+
+# ── Brave Search (web_search) ── per_call USD / 1 query (UNVERIFIED — chỉnh theo gói thật)
+brave:
+  web_search: { per_call: 0.005 }
+  "*":        { per_call: 0.0 }

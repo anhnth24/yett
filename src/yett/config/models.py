@@ -80,8 +80,11 @@ class DbProfileCfg(BaseModel):
 
 
 class SearchCfg(BaseModel):
+    """Cấu hình web_search. API key chỉ là TÊN secret — giá trị nằm ở secret store."""
+
     api_key_secret: str
-    # search backend cụ thể nối sau; hiện giữ tên key để không lộ giá trị
+    provider: Literal["brave"] = "brave"
+    base_url: str | None = None  # mặc định theo provider; override khi self-host/proxy
 
 
 class HostCfg(BaseModel):

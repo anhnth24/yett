@@ -6,7 +6,7 @@ Mọi tool khai báo JSON schema + validate. Lỗi validate là UserFacingError
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 
@@ -15,15 +15,21 @@ class ToolResult:
     ok: bool
     content: str
     is_error: bool = False
+    # Attrs gắn vào TOOL_CALL span (cost ledger...). KHÔNG chứa secret / plaintext key.
+    span_attrs: dict[str, object] = field(default_factory=dict)
 
     @staticmethod
-    def success(content: str) -> "ToolResult":
-        return ToolResult(ok=True, content=content, is_error=False)
+    def success(content: str, *, span_attrs: dict[str, object] | None = None) -> "ToolResult":
+        return ToolResult(
+            ok=True, content=content, is_error=False, span_attrs=dict(span_attrs or {})
+        )
 
     @staticmethod
-    def error(reason: str) -> "ToolResult":
+    def error(reason: str, *, span_attrs: dict[str, object] | None = None) -> "ToolResult":
         # Trả lỗi dạng agent-đọc-được thay vì raise — để agent tự sửa và thử lại.
-        return ToolResult(ok=False, content=reason, is_error=True)
+        return ToolResult(
+            ok=False, content=reason, is_error=True, span_attrs=dict(span_attrs or {})
+        )
 
 
 class ToolCtx(Protocol):

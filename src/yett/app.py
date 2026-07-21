@@ -17,10 +17,13 @@ from yett.core.complexity import ComplexityRouter
 from yett.core.context import assemble_context
 from yett.core.loop import AgentLoop, LoopConfig, TurnResult
 from yett.errors import UserFacingError
+from yett.memory.paths import MEMORY_FILENAME
+from yett.memory.review_gate import MemoryReviewGate
 from yett.memory.session import SessionStore
 from yett.memory.tasks import TaskStore
 from yett.memory.workspace import WorkspaceMemory
-from yett.obs.cost import compute_cost
+from yett.tools.builtin.memory import MemoryProposeTool
+from yett.obs.cost import compute_call_cost, compute_cost
 from yett.obs.spanstore import SpanStore
 from yett.provider.base import ChatResult, Provider
 from yett.provider.failover import FailoverRouter
@@ -28,6 +31,7 @@ from yett.policy.immutable import ImmutableCore
 from yett.security.basic_gate import BasicGate
 from yett.security.filters import redact_attrs
 from yett.security.gate import Decision, PolicyGate, SessionCtx
+from yett.tools.assist.web_search import SearchFn
 from yett.tools.builtin.codenav import GrepTool, ListDirTool, SearchTool
 from yett.tools.builtin.exec import ExecTool
 from yett.tools.builtin.files import ReadFileTool, WriteFileTool
@@ -131,6 +135,7 @@ class App:
         sandbox: Sandbox | None = None,
         fallback: Provider | None = None,
         fetcher=None,
+        search_fn: SearchFn | None = None,
         secrets=None,
         clock: Callable[[], float] = time.time,
         config_path: str | Path | None = None,
@@ -147,6 +152,9 @@ class App:
         self.tasks = TaskStore(state_dir / "tasks.db", clock=clock)
         self.scope = ProjectScope(cfg.workspace_root, {n: p.path for n, p in cfg.projects.items()})
         self.workspace = WorkspaceMemory(cfg.workspace_root)
+        # Memory review gate: agent chỉ đề xuất vào staging qua tool memory_propose;
+        # MEMORY.md chỉ được ghi khi người vận hành duyệt (CLI `yett memory approve`).
+        self.memory_gate = MemoryReviewGate(Path(cfg.workspace_root))
         self.complexity = ComplexityRouter(cfg.router)
 
         roots = _project_roots(cfg)
@@ -172,6 +180,7 @@ class App:
         self.registry.register(TaskAddTool(self.tasks))
         self.registry.register(TaskListTool(self.tasks))
         self.registry.register(TaskUpdateTool(self.tasks))
+        self.registry.register(MemoryProposeTool(self.memory_gate))
         # notify: kênh gắn muộn (serve_forever) qua set_notifier; getter để late-bind + hot-reload.
         self._notifier: Callable[[str], int] | None = None
         self.registry.register(NotifyTool(lambda: self._notifier))
@@ -192,8 +201,10 @@ class App:
             self._wire_skills(state_dir)
         if cfg.databases:
             self._wire_db()
+        # web_search: cần SearchCfg + secret store. search_fn injectable (test offline);
+        # không inject → dựng Brave backend thật (host API phải nằm trong egress allowlist).
         if cfg.search is not None and secrets is not None:
-            self._wire_search()
+            self._wire_search(search_fn)
 
         # Remote ops (SSH/VPN/log): host registry cần trước khi tạo Gate (Gate phân lớp theo host).
         self.host_registry: HostRegistry | None = None
@@ -203,12 +214,18 @@ class App:
         # Immutable core hardline TRƯỚC gate cấu hình: cấm sửa policy/identity + hardline
         # exec/ssh/db, không allowlist/rule nào đảo được. Protected = file config harness (chính
         # sách của agent) khi biết đường dẫn; luôn phủ hardline lệnh/SQL kể cả khi rỗng.
+        # MEMORY.md cũng protected: agent không write_file/exec ghi thẳng — chỉ merge qua
+        # MemoryReviewGate.approve (ngoài tool path).
         protected: list[Path] = []
         if config_path is not None:
             try:
                 protected.append(Path(config_path).resolve())
             except (OSError, ValueError):
                 pass
+        try:
+            protected.append((Path(cfg.workspace_root) / MEMORY_FILENAME).resolve())
+        except (OSError, ValueError):
+            pass
         self.gate: PolicyGate = _ImmutableFirstGate(
             ImmutableCore(protected), BasicGate(cfg.security, hosts=self.host_registry)
         )
@@ -255,9 +272,33 @@ class App:
         }
         self.registry.register(DbQueryTool(profiles, RealDbExecutor(), self._secrets))
 
-    def _wire_search(self) -> None:
-        # web_search cần search backend cụ thể (nối sau); đăng ký khi có.
-        return None
+    def _wire_search(self, search_fn: SearchFn | None = None) -> None:
+        """Đăng ký `web_search` vào registry. Fail-closed: thiếu SearchCfg/secrets thì
+        caller không gọi hàm này; api_key_secret rỗng → không đăng ký (tool không tồn tại
+        thay vì chạy với key trống)."""
+        from yett.tools.assist.search_backend import BraveSearchBackend
+        from yett.tools.assist.web_search import WebSearchTool
+
+        scfg = self.cfg.search
+        if scfg is None or self._secrets is None:
+            return
+        if not scfg.api_key_secret:
+            return
+        allow = list(self.cfg.egress.allowlist)
+        # provider đã validate bởi SearchCfg (Literal); hiện chỉ brave.
+        fn: SearchFn = search_fn or BraveSearchBackend(allow, base_url=scfg.base_url)
+        cost = compute_call_cost(scfg.provider, "web_search", self._pricing)
+        self.registry.register(
+            WebSearchTool(
+                fn,
+                self._secrets,
+                scfg.api_key_secret,
+                allowlist=allow,
+                cost_usd=cost,
+                cost_provider=scfg.provider,
+                cost_model="web_search",
+            )
+        )
 
     def _wire_remote(self) -> None:
         from yett.tools.remote.hostprofile import HostProfile
@@ -307,6 +348,7 @@ class App:
             "load_skill": "nạp hướng dẫn skill", "delegate": "giao việc cho subagent",
             "task_add": "thêm việc/mục tiêu cần làm", "task_list": "xem việc cần làm",
             "task_update": "cập nhật/hoàn thành việc",
+            "memory_propose": "đề xuất ghi nhớ dài hạn vào staging (chờ duyệt mới vào MEMORY.md)",
             "notify": "đẩy thông báo cho người dùng qua Telegram",
         }
         lines = ["Bạn là yett — trợ lý DevOps cá nhân, fail-closed (mặc định từ chối, chặn trước khi chạy).",
@@ -338,6 +380,11 @@ class App:
             " Khi người dùng nói kiểu 'nhắc tôi…', 'ghi lại việc…', 'tôi cần làm…' → tạo task."
             " Khi được hỏi 'tôi đang làm gì / hôm nay có gì' → dùng task_list, ưu tiên việc"
             " quá hạn/đến hạn. Chủ động gợi ý bước tiếp và hỏi lại khi thiếu thông tin."
+        )
+        lines.append(
+            "\nBỘ NHỚ DÀI HẠN: sự kiện/ưu tiên đáng nhớ lâu → memory_propose (chỉ staging)."
+            " KHÔNG ghi thẳng MEMORY.md / memory/pending bằng write_file. Người dùng duyệt bằng"
+            " `yett memory list|approve|reject`."
         )
         lines.append("\nGiới hạn an toàn: KHÔNG xóa file OS trên server, KHÔNG ALTER/DELETE/UPDATE DB "
                      "trừ khi được duyệt tường minh. Khi bị chặn, giải thích và đề xuất cách an toàn.")

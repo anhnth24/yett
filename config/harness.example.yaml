@@ -121,6 +121,13 @@ sandbox:
   mem_limit: 2g
   cpus: 2.0
 
+# ---- web_search (Brave Search API; key trong secret store) ----
+# search:
+#   provider: brave
+#   api_key_secret: search_key   # export YETT_SECRET_SEARCH_KEY="BSA..."
+# Thêm api.search.brave.com vào egress.allowlist bên dưới. Kết quả URL ngoài allowlist bị lọc.
+# Nhớ thêm rule: { tool: web_search, effect: allow } ở security.allowlist.
+
 # ---- Egress allowlist (domain web_fetch/search được phép) ----
 egress:
   allowlist:
@@ -132,6 +139,7 @@ egress:
     - api.openai.com         # OpenAI
     - api.anthropic.com      # Anthropic
     - api.telegram.org       # Kênh Telegram (nếu bật channels.telegram)
+    # - api.search.brave.com # web_search (Brave) — bỏ comment nếu bật search ở trên
     # - github.com
 
 # ---- Security (Policy Gate) ----
@@ -160,6 +168,9 @@ security:
     - tool: task_list
       effect: allow
     - tool: task_update
+      effect: allow
+    # Memory review gate: agent chỉ đề xuất vào staging; duyệt bằng `yett memory approve`
+    - tool: memory_propose
       effect: allow
     - tool: notify                  # cho agent chủ động báo qua Telegram (deploy xong, CI đỏ…)
       effect: allow

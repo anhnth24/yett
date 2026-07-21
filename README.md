@@ -4,7 +4,7 @@
 >
 > **Tên:** *yett* = cổng lưới sắt của thành lũy, loại thả xuống đóng kín theo mặc định — đúng triết lý fail-closed của Policy Gate (mọi tool call qua một cổng, mặc định từ chối). Lệnh CLI: `yett`.
 >
-> **Trạng thái:** Bộ khung code đã implement (hardening P0–P2 theo `plans/260705-1658-harden-yett-harness/`), 440 test collect được (435 xanh, 4 skip khi máy không có Docker daemon), mypy strict, ruff, import-linter đều sạch. Một số hạng mục mới chỉ **kiểm chứng qua fake/logic đơn lẻ, chưa verify end-to-end** — xem cột "Kiểm chứng" trong [Trạng thái implement](#trạng-thái-implement) bên dưới. *(Test web UI đã bind cổng 0 (ephemeral) — hết flaky trên Windows do dải cổng bị WSL2/Hyper-V loại trừ.)*
+> **Trạng thái:** Bộ khung code đã implement (hardening P0–P2 theo `plans/260705-1658-harden-yett-harness/`), 467 test collect được (462 xanh, 5 skip khi máy không có Docker daemon), mypy strict, ruff, import-linter đều sạch. Một số hạng mục mới chỉ **kiểm chứng qua fake/logic đơn lẻ, chưa verify end-to-end** — xem cột "Kiểm chứng" trong [Trạng thái implement](#trạng-thái-implement) bên dưới. *(Test web UI đã bind cổng 0 (ephemeral) — hết flaky trên Windows do dải cổng bị WSL2/Hyper-V loại trừ.)*
 
 ## Chạy thử nhanh
 
@@ -15,7 +15,7 @@ yett setup           # wizard cài đặt từng bước: provider → model →
 yett serve --open    # 🖥️ mở giao diện chat WEB (localhost) — giống "app"
 yett chat "báo cáo tiến độ tuần này của các project"   # hoặc dùng CLI
 yett usage --by provider --state state
-pytest -q            # 440 test (435 xanh, 4 skip nếu thiếu Docker daemon)
+pytest -q            # 467 test (462 xanh, 5 skip nếu thiếu Docker daemon)
 ```
 
 **Muốn dùng như một app Windows:** `yett serve --open` mở UI chat trong trình duyệt; hoặc đóng gói `yett.exe` (double-click chạy, không cần Python) — xem [`packaging/BUILD_EXE.md`](packaging/BUILD_EXE.md).
@@ -41,14 +41,14 @@ Chọn 1 trong 10+ model top (GLM 5.2, MiniMax M3, DeepSeek, Gemini, GPT-5.5, Cl
 | Agent loop: bounded + prune + checkpoint/resume + cancel | 🟡 fake — đúng với `FakeProvider`; contract test xác nhận system prompt được gửi + đúng thứ tự message assistant(tool_use)→tool_result qua transport inject, nhưng **chưa gọi API thật** | `test_core_loop` (fake), `test_real_provider_contract` (transport inject, không phải API thật) |
 | Tracing + span store + cost ledger | ✅ e2e | `test_obs` |
 | Memory: workspace file (AGENTS/SOUL/MEMORY.md → system prompt) **(wired vào `yett chat`)** | ✅ e2e | `test_memory`, verify `App.chat` |
-| Memory: review gate (staging cho agent đề xuất ghi MEMORY.md) | ❌ chưa wire — `MemoryReviewGate` 0 caller trong `src`; chưa có tool nào cho agent GHI memory (registry chỉ có tool đọc), `workspace.py` chỉ đọc file. Bất biến "agent không ghi thẳng MEMORY.md" hiện đúng-do-cấu-trúc (không có đường ghi nào tồn tại), không phải do gate đang chặn một đường ghi thật — "wire" gate này là xây tính năng ghi-memory mới, nằm ngoài phạm vi hardening (xem plan Phase 7, RT-11) | `test_memory` (gọi gate trực tiếp, không qua `App`) |
+| Memory: review gate (staging cho agent đề xuất ghi MEMORY.md) **(wired vào `yett chat` + CLI)** | ✅ e2e — tool `memory_propose` đăng ký qua App → Gate→Registry→Filters, chỉ ghi `memory/pending/`; `write_file`/`ImmutableCore` chặn ghi thẳng `MEMORY.md`; người vận hành `yett memory list\|approve\|reject` | `test_memory`, `test_memory_review`, `test_memory_write_invariant` |
 | Remote ops: host profile + ssh_exec + log_read + vpn | 🟡 fake (backend inject, chưa SSH/VPN thật) | `test_remote_db` |
 | DB tools: db_query/db_config read-only 4 lớp | 🟡 fake (executor inject, chưa DB thật ngoài sqlite) | `test_remote_db` |
 | Skills: loader + disclosure + lint + review gate **(wired vào `yett chat`)** | ✅ e2e | `test_skills_hooks_sched`, `test_group2_wired` |
 | Hooks: mutate/deny + cách ly lỗi **(wired)** | ✅ e2e | `test_skills_hooks_sched` |
 | Scheduler: cron + overlap + unattended approval timeout | ✅ e2e | `test_skills_hooks_sched` |
 | Eval suite golden tasks | ✅ e2e | `test_eval_websearch` |
-| **`web_search` tool** | ❌ chưa wire — `App._wire_search()` là no-op; tool chỉ được gọi trực tiếp trong test, `yett chat` chưa bao giờ đăng ký nó vào registry | `test_eval_websearch` (gọi tool trực tiếp, không qua `App`) |
+| **`web_search` tool** **(wired vào `yett chat` / `build_app`)** | 🟡 fake — đăng ký qua `App._wire_search()` khi có `search:` + secret store; invoke qua `App.chat` với transport inject (Brave backend offline); key thiếu/rỗng fail an toàn; kết quả lọc egress allowlist; secret không vào context/span. **Chưa gọi Brave API thật** | `test_eval_websearch`, `test_web_search_wired` |
 | Policy engine (policy-as-config, drop-in) + immutable core | ✅ e2e | `test_phase3` |
 | Audit hash-chain + retention + channel gating + analytics | ✅ e2e | `test_phase3`, `test_phase3_extra` |
 | Subagent delegation 1 cấp (không leo thang quyền) **(wired)** | ✅ e2e | `test_phase3`, `test_group2_wired` |
@@ -98,7 +98,7 @@ Nhãn phase theo lộ trình: **[v0.1]** MVP → **[v0.2]** mở rộng cho agen
 
 ### Memory
 - **[v0.1] Working memory file-based** — bộ file workspace theo chuẩn de-facto (AGENTS.md, SOUL.md, MEMORY.md, TOOLS.md, daily notes) nạp vào context theo token budget; con người đọc được, git-diff được, không hidden state. *(format OpenClaw, MIT)*
-- **[v0.1] Memory review gate** — agent không ghi thẳng MEMORY.md; đề xuất vào staging, được duyệt mới merge (khác chủ đích so với cả 3 repo tham chiếu).
+- **[v0.1] Memory review gate** — agent không ghi thẳng MEMORY.md; tool `memory_propose` chỉ ghi staging (`memory/pending/`), người vận hành duyệt bằng `yett memory list|approve|reject` (khác chủ đích so với cả 3 repo tham chiếu).
 - **[v0.2] Cross-session memory** — SQLite FTS5 + trigram index (tốt cho tìm substring/tiếng Việt), tool `session_search` trả message gốc từ các phiên cũ. *(vendor schema từ Hermes, MIT)*
 
 ### Skills
