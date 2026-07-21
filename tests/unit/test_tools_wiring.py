@@ -38,6 +38,22 @@ async def test_denied_tool_returns_error_not_exception(tmp_path) -> None:
     assert res.is_error and "DENIED" in res.content
 
 
+async def test_allowlisted_but_unregistered_tool_returns_error_not_exception(tmp_path) -> None:
+    """Optional/stale tool config must not abort a turn after Gate allows its name."""
+    gate = BasicGate(
+        SecurityCfg(allowlist=[ToolRule(tool="missing_optional_tool", effect="allow")])
+    )
+    res = await execute_tool(
+        "missing_optional_tool",
+        {},
+        _Ctx(),
+        gate=gate,
+        registry=_registry(ProjectScope(tmp_path, {})),
+    )
+    assert res.is_error
+    assert "không tồn tại" in res.content
+
+
 async def test_hardline_never_reaches_sandbox(tmp_path) -> None:
     audit: list[dict] = []
     scope = ProjectScope(tmp_path, {})
