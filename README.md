@@ -25,7 +25,7 @@ Chọn 1 trong 10+ model top (GLM 5.2, MiniMax M3, DeepSeek, Gemini, GPT-5.5, Cl
 
 ## Trạng thái implement
 
-Đã có code chạy được + test cho lõi cả 3 phase. Phần cần tài nguyên ngoài (LLM API thật, Docker daemon, SSH/VPN tới server thật, Telegram) được thiết kế qua interface + backend inject được, và test bằng fake/offline — đúng nguyên tắc no-egress trong test.
+Đã có code chạy được + test cho lõi cả 3 phase. Phần cần tài nguyên ngoài (LLM API thật, Docker daemon, SSH/VPN tới server thật, Telegram/Zalo Bot API) được thiết kế qua interface + backend inject được, và test bằng fake/offline — đúng nguyên tắc no-egress trong test.
 
 **Chú giải cột "Kiểm chứng":** ✅ e2e = có test lắp ráp thật (App/loop thật, không chỉ gọi hàm lẻ). 🟡 fake/wired = logic đúng khi chạy qua `FakeProvider`/stand-in hoặc đã wire vào `App` nhưng backend thật (provider/API/Docker daemon) **chưa** được quan sát chạy trên máy này — có thể còn lệch khi nối thật. ❌ chưa wire = cấu hình cho phép nhưng đường chạy thật (`App`/`yett chat`) chưa thực sự dùng tới (tool/gate tồn tại, không có caller thật).
 
@@ -62,6 +62,7 @@ Chọn 1 trong 10+ model top (GLM 5.2, MiniMax M3, DeepSeek, Gemini, GPT-5.5, Cl
 | **Trợ lý cá nhân: task/goal store + tool (task_add/list/update) + briefing chủ động** **(wired vào `yett chat` + web tab "Việc")** | ✅ e2e | `test_tasks`, `test_assistant`, `test_web_console_endpoints` |
 | **Code navigation: list_dir/grep/search scoped** + complexity router + anti-loop step-budget | ✅ e2e | `test_codenav`, `test_complexity`, `test_core_loop` |
 | **Kênh Telegram: long-poll + gating/pairing + dispatch→App.chat + notify tool + briefing tự động** **(wired vào `yett serve`)** | 🟡 fake — logic đúng qua transport inject (getUpdates/sendMessage), dispatch chạy App.chat thật; **chưa gọi api.telegram.org thật** (cần bot token) | `test_telegram`, `test_assistant` (notify + e2e dispatch) |
+| **Kênh Zalo Official Bot API** (không Zalo Personal): poll/webhook + gating/pairing + normalize/chunk ≤2000 + dispatch→App.chat + notify + token redact + fail-closed webhook config **(wired vào `yett serve` / config / capabilities)** | 🟡 fake — contract offline qua transport inject (`bot-api.zaloplatforms.com` shape: `getUpdates` single-object + timeout string, `sendMessage`, webhook `X-Bot-Api-Secret-Token`); **chưa gọi Bot API thật** (cần token từ [bot.zaloplatforms.com](https://bot.zaloplatforms.com); assumptions ghi trong `channels/zalo_bot.py`) | `test_zalo_bot`, `test_zalo_channel_wired`, `test_assistant` (zalo dispatch) |
 | VPN/SSH CLI thật | ⏳ interface + backend inject sẵn, cần tài nguyên ngoài để nối | — |
 
 ## Repo này sẽ làm gì
@@ -143,7 +144,8 @@ Use-case đầu tiên: trợ lý DevOps cá nhân chạy local — quản lý pr
 
 ### Kênh giao tiếp
 - **[v0.1] CLI/TUI** — kênh duy nhất của MVP.
-- **[v0.3] Telegram → Zalo Bot API** — theo thứ tự độ khó đã verify. **Chủ đích không làm:** Zalo Personal (phụ thuộc thư viện unofficial reverse-engineered, rủi ro ToS) và WeChat (plugin đóng của bên thứ ba, không portable).
+- **[v0.3] Telegram** — long-poll Bot API, wired `yett serve` (fake/offline verified).
+- **[v0.3] Zalo Official Bot API** — `channels.zalo` (poll mặc định hoặc webhook HTTPS + secret); gating/pairing như Telegram; **không** Zalo Personal. Docs tham chiếu: [getUpdates](https://docs.zaloplatforms.com/docs/BOT/apis/getUpdates), [setWebhook](https://docs.zaloplatforms.com/docs/BOT/apis/setWebhook), [sendMessage](https://docs.zaloplatforms.com/docs/BOT/apis/sendMessage). **Chủ đích không làm:** Zalo Personal (lib unofficial) và WeChat (plugin đóng, không portable).
 
 ### Defer có chủ đích (chưa làm, có điều kiện mở lại)
 - Semantic memory / knowledge graph — chỉ khi FTS5 đo được là không đủ.

@@ -445,12 +445,21 @@ class App:
             "task_add": "thêm việc/mục tiêu cần làm", "task_list": "xem việc cần làm",
             "task_update": "cập nhật/hoàn thành việc",
             "memory_propose": "đề xuất ghi nhớ dài hạn vào staging (chờ duyệt mới vào MEMORY.md)",
-            "notify": "đẩy thông báo cho người dùng qua Telegram",
+            "notify": "đẩy thông báo cho người dùng qua kênh đã bật (Telegram/Zalo)",
         }
+        channel_bits: list[str] = []
+        if getattr(self.cfg.channels, "telegram", None) is not None and self.cfg.channels.telegram.enabled:
+            channel_bits.append("Telegram")
+        if getattr(self.cfg.channels, "zalo", None) is not None and self.cfg.channels.zalo.enabled:
+            channel_bits.append("Zalo Bot API")
+        if channel_bits:
+            tool_desc["notify"] = f"đẩy thông báo cho người dùng qua {', '.join(channel_bits)}"
         lines = ["Bạn là yett — trợ lý DevOps cá nhân, fail-closed (mặc định từ chối, chặn trước khi chạy).",
                  "", "KHẢ NĂNG (tool đang bật):"]
         for name in self.registry.names():
             lines.append(f"- {name}: {tool_desc.get(name, name)}")
+        if channel_bits:
+            lines.append(f"\nKênh chat ngoài: {', '.join(channel_bits)} (gating/allowlist hoặc pairing).")
         if self.cfg.projects:
             lines.append(f"\nProject đã đăng ký: {', '.join(self.cfg.projects)}")
         if self.cfg.databases:
