@@ -105,6 +105,27 @@ projects:
 #     pairing_code: "yett-ghep-2026"   # gửi mã này cho bot để tự ghép (rỗng = tắt pairing)
 #     allowed_chat_ids: []             # hoặc điền sẵn chat_id đã biết
 #     briefing_hour: 8                 # gửi briefing tự động lúc 8h (theo timezone); bỏ = tắt
+#
+# ---- Kênh Zalo Official Bot API (KHÔNG phải Zalo Personal / unofficial) ----
+# Tạo bot tại https://bot.zaloplatforms.com — token dạng "{id}:{secret}".
+# Docs: https://docs.zaloplatforms.com/docs/BOT/apis/getUpdates (poll) /
+#       https://docs.zaloplatforms.com/docs/BOT/apis/setWebhook (webhook) /
+#       https://docs.zaloplatforms.com/docs/BOT/apis/sendMessage (text ≤2000).
+# Secret: export YETT_SECRET_ZALO_BOT_TOKEN="..."  hoặc secrets/zalo_bot_token (600).
+# Egress: thêm bot-api.zaloplatforms.com. mode=webhook fail-closed nếu thiếu HTTPS + secret 8–256.
+# channels:
+#   zalo:
+#     enabled: true
+#     token_secret: zalo_bot_token
+#     pairing_code: "yett-ghep-2026"
+#     allowed_chat_ids: []             # chat_id string (có thể hex-like, không chỉ số)
+#     mode: poll                       # poll | webhook (getUpdates ⊥ webhook theo docs Zalo)
+#     poll_timeout_sec: 30
+#     # mode: webhook
+#     # webhook_url: "https://example.com/api/channels/zalo/webhook"
+#     # webhook_secret: "change-me-8chars-min"
+#     # webhook_path: /api/channels/zalo/webhook
+#     briefing_hour: 8
 
 # ---- Bật/tắt skills & subagents ----
 skills_enabled: true
@@ -148,6 +169,7 @@ egress:
     - api.openai.com         # OpenAI
     - api.anthropic.com      # Anthropic
     - api.telegram.org       # Kênh Telegram (nếu bật channels.telegram)
+    - bot-api.zaloplatforms.com  # Kênh Zalo Official Bot API (nếu bật channels.zalo)
     # - api.search.brave.com # web_search (Brave) — bỏ comment nếu bật search ở trên
     # - github.com
 

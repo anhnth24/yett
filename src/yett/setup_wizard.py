@@ -176,7 +176,11 @@ def run_wizard(
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False), encoding="utf-8")
     emit(f"✓ Đã ghi {config_path}")
-    emit("\nXong! Chạy thử:  yett chat \"xin chào\"")
+    emit(
+        "\nXong! Chạy thử:  yett chat \"xin chào\""
+        "\n(Tuỳ chọn) Kênh Telegram/Zalo Official Bot: bật trong harness.yaml → channels.*"
+        " + secret token; không cấu hình ở bước setup này."
+    )
     return ans
 
 

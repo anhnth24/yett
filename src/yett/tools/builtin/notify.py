@@ -1,7 +1,7 @@
-"""notify tool: agent chủ động đẩy tin cho người dùng (Telegram/kênh đã bật).
+"""notify tool: agent chủ động đẩy tin cho người dùng (Telegram/Zalo/kênh đã bật).
 
 'Deploy xong rồi báo tôi' → agent gọi notify khi hoàn tất. Kênh do App.set_notifier gắn
-(vd TelegramChannel.notify). Chưa bật kênh → trả lỗi agent-đọc-được (không phải sự cố).
+(vd TelegramChannel.notify / ZaloChannel.notify). Chưa bật kênh → trả lỗi agent-đọc-được.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from yett.tools.base import ToolCtx, ToolResult
 
 
 class NotifyTool:
-    """Gửi một thông báo ngắn cho người dùng qua kênh ngoài (vd Telegram)."""
+    """Gửi một thông báo ngắn cho người dùng qua kênh ngoài (Telegram/Zalo)."""
 
     name = "notify"
     schema = {
@@ -33,6 +33,8 @@ class NotifyTool:
     async def run(self, args: dict, ctx: ToolCtx) -> ToolResult:
         notify = self._get()
         if notify is None:
-            return ToolResult.error("chưa bật kênh thông báo (Telegram). Bật trong config để dùng notify.")
+            return ToolResult.error(
+                "chưa bật kênh thông báo (Telegram/Zalo). Bật channels.*.enabled trong config để dùng notify."
+            )
         n = notify(args["text"])
         return ToolResult.success(f"Đã gửi thông báo tới {n} kênh.")

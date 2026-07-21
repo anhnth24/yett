@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ProviderCfg(BaseModel):
@@ -117,8 +117,46 @@ class TelegramCfg(BaseModel):
     poll_timeout_sec: int = 25              # long-poll getUpdates
 
 
+class ZaloCfg(BaseModel):
+    """Kênh Zalo Official Bot API (spec P3 §4) — không phải Zalo Personal.
+
+    Token là secret (không plaintext). Fail-closed: enabled + mode=webhook đòi hỏi
+    HTTPS webhook_url + secret 8–256 ký tự (validate lúc load config).
+    """
+
+    enabled: bool = False
+    token_secret: str = "zalo_bot_token"  # TÊN secret, giá trị ở secret store/env
+    allowed_chat_ids: list[str] = Field(default_factory=list)
+    pairing_code: str = ""
+    briefing_hour: int | None = None
+    poll_timeout_sec: int = Field(default=30, ge=0, le=120)
+    mode: Literal["poll", "webhook"] = "poll"
+    webhook_url: str = ""
+    webhook_secret: str = ""  # gửi trong header X-Bot-Api-Secret-Token; KHÔNG phải bot token
+    webhook_path: str = "/api/channels/zalo/webhook"
+    http_timeout_sec: float = Field(default=60.0, gt=0, le=300)
+    max_retries: int = Field(default=2, ge=0, le=8)
+
+    @model_validator(mode="after")
+    def _fail_closed_webhook(self) -> "ZaloCfg":
+        if not self.enabled:
+            return self
+        if self.mode == "webhook":
+            if not self.webhook_url.startswith("https://"):
+                raise ValueError(
+                    "channels.zalo: mode=webhook đòi hỏi webhook_url HTTPS (fail-closed)"
+                )
+            n = len(self.webhook_secret or "")
+            if n < 8 or n > 256:
+                raise ValueError(
+                    "channels.zalo: mode=webhook đòi hỏi webhook_secret 8–256 ký tự (fail-closed)"
+                )
+        return self
+
+
 class ChannelsCfg(BaseModel):
     telegram: TelegramCfg = Field(default_factory=TelegramCfg)
+    zalo: ZaloCfg = Field(default_factory=ZaloCfg)
 
 
 class HarnessCfg(BaseModel):

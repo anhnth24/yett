@@ -191,6 +191,22 @@ def make_handler(
                 self._json(404, {"error": "not found"})
 
         def do_POST(self) -> None:  # noqa: N802
+            # Zalo Official Bot webhook: auth bằng X-Bot-Api-Secret-Token (không dựa Host
+            # loopback — Zalo gọi từ ngoài). Path khớp config mới nhận; secret sai → 401.
+            zalo_wh = getattr(self.server, "_zalo_webhook", None)
+            req_path = urlparse(self.path).path
+            if (
+                isinstance(zalo_wh, dict)
+                and req_path == zalo_wh.get("path")
+                and zalo_wh.get("channel") is not None
+            ):
+                body = self._read_body()
+                if body is None:
+                    return
+                result = zalo_wh["channel"].handle_webhook(self.headers, body)
+                self._json(result.status, {"ok": result.ok, "error": result.error})
+                return
+
             if not self._host_origin_ok():
                 # Trả lỗi sớm (trước khi đọc body) vẫn phải drain body đã khai báo qua
                 # Content-Length trước khi đóng — nếu không, client (đang ghi dở body)
@@ -386,12 +402,34 @@ def _hot_swap(httpd, chat_lock, center, rebuild) -> None:
         httpd._app = new_app
         if center is not None:
             new_app.set_approver(center.request)
-        # Giữ kênh thông báo (Telegram) sau hot-reload: App mới cũng cần notifier.
+        # Giữ kênh thông báo (Telegram/Zalo) sau hot-reload: App mới cũng cần notifier.
         notifier = getattr(httpd, "_notifier", None)
         if notifier is not None:
             new_app.set_notifier(notifier)
         if old is not None:
             old.close()
+
+
+def _compose_notifier(httpd, notify_fn) -> None:
+    """Gộp nhiều kênh notify (Telegram + Zalo) thành một notifier duy nhất cho App."""
+    prev = getattr(httpd, "_notifier", None)
+    if prev is None:
+        setattr(httpd, "_notifier", notify_fn)
+        return
+
+    def _both(text: str) -> int:
+        n = 0
+        try:
+            n += int(prev(text) or 0)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            n += int(notify_fn(text) or 0)
+        except Exception:  # noqa: BLE001
+            pass
+        return n
+
+    setattr(httpd, "_notifier", _both)
 
 
 def _start_telegram(httpd, app, lock, stop) -> None:
@@ -418,8 +456,8 @@ def _start_telegram(httpd, app, lock, stop) -> None:
         get_app=lambda: getattr(httpd, "_app", app), chat_lock=lock,
         pairing_code=tg.pairing_code, poll_timeout=tg.poll_timeout_sec,
     )
-    httpd._notifier = channel.notify  # để hot-swap giữ notifier
-    app.set_notifier(channel.notify)
+    _compose_notifier(httpd, channel.notify)
+    app.set_notifier(getattr(httpd, "_notifier", None))
     threading.Thread(target=channel.run, args=(stop,), daemon=True).start()
     print(f"[yett] Telegram: bật (poll). Chat đã ghép: {len(gate.allowed_chat_ids)}.")
     if tg.briefing_hour is not None:
@@ -428,6 +466,88 @@ def _start_telegram(httpd, app, lock, stop) -> None:
             daemon=True,
         ).start()
         print(f"[yett] Briefing tự động {tg.briefing_hour}h ({app.cfg.timezone}) → Telegram.")
+
+
+def _start_zalo(httpd, app, lock, stop) -> None:
+    """Bật kênh Zalo Official Bot API nếu config enabled. Fail-closed: webhook thiếu secret/HTTPS
+    đã bị chặn ở pydantic load; token thiếu → cảnh báo, không sập web. Không gọi API thật trong test."""
+    import sys
+
+    zl = app.cfg.channels.zalo
+    if not zl.enabled:
+        return
+    from yett.channels.gating import ChannelGate
+    from yett.channels.zalo_bot import (
+        ZaloChannel,
+        ZaloClient,
+        validate_zalo_runtime_cfg,
+    )
+    from yett.errors import YettError
+
+    cfg_err = validate_zalo_runtime_cfg(
+        enabled=zl.enabled, mode=zl.mode,
+        webhook_url=zl.webhook_url, webhook_secret=zl.webhook_secret,
+    )
+    if cfg_err:
+        print(f"[yett] Zalo config fail-closed: {cfg_err} — bỏ qua.", file=sys.stderr)
+        return
+    try:
+        token = app._secrets.get(zl.token_secret)
+    except (YettError, Exception) as e:  # noqa: BLE001 — token chưa đặt → tắt Zalo, web vẫn chạy
+        print(f"[yett] Zalo bật nhưng chưa lấy được token ({zl.token_secret}): {e} — bỏ qua.",
+              file=sys.stderr)
+        return
+    gate = ChannelGate(allowed_chat_ids=set(zl.allowed_chat_ids))
+    client = ZaloClient(
+        token,
+        http_timeout_sec=zl.http_timeout_sec,
+        max_retries=zl.max_retries,
+    )
+    channel = ZaloChannel(
+        client, gate,
+        get_app=lambda: getattr(httpd, "_app", app), chat_lock=lock,
+        pairing_code=zl.pairing_code, poll_timeout=zl.poll_timeout_sec,
+        webhook_secret=zl.webhook_secret if zl.mode == "webhook" else "",
+    )
+    _compose_notifier(httpd, channel.notify)
+    app.set_notifier(getattr(httpd, "_notifier", None))
+    setattr(httpd, "_zalo_channel", channel)
+
+    if zl.mode == "webhook":
+        path = zl.webhook_path if zl.webhook_path.startswith("/") else f"/{zl.webhook_path}"
+        setattr(httpd, "_zalo_webhook", {"path": path, "channel": channel})
+        try:
+            client.set_webhook(zl.webhook_url, zl.webhook_secret)
+        except Exception as e:  # noqa: BLE001 — đăng ký webhook lỗi → không nhận inbound; web vẫn chạy
+            print(f"[yett] Zalo setWebhook lỗi: {e} — webhook path vẫn lắng nghe local.",
+                  file=sys.stderr)
+        print(f"[yett] Zalo: bật (webhook {path}). Chat đã ghép: {len(gate.allowed_chat_ids)}.")
+    else:
+        try:
+            client.delete_webhook()
+        except Exception:  # noqa: BLE001 — webhook cũ có thể không tồn tại
+            pass
+        threading.Thread(target=channel.run, args=(stop,), daemon=True).start()
+        print(f"[yett] Zalo: bật (poll). Chat đã ghép: {len(gate.allowed_chat_ids)}.")
+
+    if zl.briefing_hour is not None:
+        threading.Thread(
+            target=_run_briefing, args=(httpd, lock, channel, zl.briefing_hour, app.cfg.timezone, stop),
+            daemon=True,
+        ).start()
+        print(f"[yett] Briefing tự động {zl.briefing_hour}h ({app.cfg.timezone}) → Zalo.")
+
+    def _shutdown_zalo() -> None:
+        channel.stop()
+        if zl.mode == "webhook":
+            try:
+                client.delete_webhook()
+            except Exception:  # noqa: BLE001
+                pass
+
+    hooks: list = getattr(httpd, "_channel_shutdown_hooks", None) or []
+    hooks.append(_shutdown_zalo)
+    setattr(httpd, "_channel_shutdown_hooks", hooks)
 
 
 def _run_briefing(httpd, chat_lock, channel, hour, tz, stop) -> None:
@@ -483,6 +603,7 @@ def serve_forever(
     sched = threading.Thread(target=_run_scheduler, args=(httpd, lock, stop), daemon=True)
     sched.start()
     _start_telegram(httpd, app, lock, stop)  # kênh Telegram + briefing tự động (nếu config bật)
+    _start_zalo(httpd, app, lock, stop)      # kênh Zalo Official Bot API (poll hoặc webhook)
     if config_path and rebuild is not None:
         # Watcher: sửa file config (trên host, kể cả mount :ro) → hot-reload live trong prod.
         threading.Thread(
@@ -495,5 +616,10 @@ def serve_forever(
         print("\n[yett] đã dừng.")
     finally:
         stop.set()
+        for hook in list(getattr(httpd, "_channel_shutdown_hooks", []) or []):
+            try:
+                hook()
+            except Exception:  # noqa: BLE001
+                pass
         httpd.shutdown()
         getattr(httpd, "_app", app).close()  # đóng App hiện tại (có thể đã hot-reload swap)
