@@ -159,7 +159,7 @@ def test_windows_read_rejects_reparse_swap_between_check_and_open(
 
     # Model Windows, where O_NOFOLLOW is unavailable and a CRT open follows the
     # reparse point introduced after the initial lstat.
-    monkeypatch.setattr(review_mod.os, "O_NOFOLLOW", 0)
+    monkeypatch.setattr(review_mod.os, "O_NOFOLLOW", 0, raising=False)
     monkeypatch.setattr(review_mod.os, "open", racing_open)
     with pytest.raises(MemoryReviewError, match="TOCTOU"):
         MemoryReviewGate._windows_read_regular_snapshot_at(tmp_path, controlled.name)
