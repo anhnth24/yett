@@ -396,7 +396,8 @@ def test_review_gate_recovers_when_staging_unlink_fails_after_commit(
 
     def fail_once(path, *args, **kwargs):
         nonlocal failed
-        if path == staged_name and not failed:
+        path_name = getattr(path, "name", path)
+        if path_name == staged_name and not failed:
             failed = True
             raise OSError("simulated crash before staging cleanup")
         return real_unlink(path, *args, **kwargs)
@@ -429,19 +430,18 @@ def test_review_gate_detects_memory_in_place_write_toctou(
     real_read = MemoryReviewGate._read_regular_snapshot_at
     calls = 0
 
-    def racing_read(dir_fd: int, name: str):
+    def racing_read(directory: int | Path, name: str):
         nonlocal calls
         if name == "MEMORY.md":
             calls += 1
             if calls == 2:
-                fd = os.open(
-                    name,
-                    os.O_WRONLY | os.O_TRUNC,
-                    dir_fd=dir_fd,
-                )
+                if isinstance(directory, Path):
+                    fd = os.open(directory / name, os.O_WRONLY | os.O_TRUNC)
+                else:
+                    fd = os.open(name, os.O_WRONLY | os.O_TRUNC, dir_fd=directory)
                 os.write(fd, b"raced")
                 os.close(fd)
-        return real_read(dir_fd, name)
+        return real_read(directory, name)
 
     monkeypatch.setattr(
         MemoryReviewGate, "_read_regular_snapshot_at", staticmethod(racing_read)
