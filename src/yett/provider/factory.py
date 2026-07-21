@@ -36,8 +36,10 @@ def build_provider(cfg: ProviderCfg, secrets) -> Provider:
             model=cfg.model, api_key=key, base_url=base_url, provider_name=cfg.name
         )
     if cfg.name == "anthropic":
-        # Anthropic Messages API native để sau; hiện dùng name=anthropic_oai (endpoint OpenAI-compat).
-        raise NotImplementedError(
-            "adapter Anthropic native chưa nối; dùng name=anthropic_oai (endpoint OpenAI-compatible)"
+        from yett.provider.anthropic import AnthropicProvider
+
+        base_url = cfg.base_url or default_base_url("anthropic") or "https://api.anthropic.com/v1"
+        return AnthropicProvider(
+            model=cfg.model, api_key=key, base_url=base_url, provider_name=cfg.name
         )
     raise ValueError(f"provider không hỗ trợ: {cfg.name}")
