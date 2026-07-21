@@ -14,11 +14,14 @@ from yett.tools.base import ToolCtx, ToolResult
 
 # search_fn(query, api_key) -> list of {title, url, snippet}
 SearchFn = Callable[[str, str], Awaitable[list[dict]]]
+_MAX_QUERY_CHARS = 2_048
+_MAX_RESULTS = 10
 
 
 def _host_allowed(host: str, allowlist: list[str]) -> bool:
-    host = host.lower()
-    return any(host == d or host.endswith("." + d) for d in allowlist)
+    host = host.lower().rstrip(".")
+    domains = (str(d).lower().rstrip(".") for d in allowlist)
+    return any(d and (host == d or host.endswith("." + d)) for d in domains)
 
 
 class WebSearchTool:
@@ -27,8 +30,12 @@ class WebSearchTool:
     name = "web_search"
     schema = {
         "type": "object",
-        "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+        "properties": {
+            "query": {"type": "string", "minLength": 1, "maxLength": _MAX_QUERY_CHARS},
+            "limit": {"type": "integer", "minimum": 1, "maximum": _MAX_RESULTS},
+        },
         "required": ["query"],
+        "additionalProperties": False,
     }
 
     def __init__(
@@ -51,11 +58,22 @@ class WebSearchTool:
         self._cost_model = cost_model
 
     def validate(self, args: dict) -> None:
-        if not args.get("query"):
+        query = args.get("query")
+        if not isinstance(query, str) or not query.strip():
             raise UserFacingError("thiếu 'query'")
+        if len(query) > _MAX_QUERY_CHARS:
+            raise UserFacingError(f"'query' vượt {_MAX_QUERY_CHARS} ký tự")
+        limit = args.get("limit", 5)
+        if type(limit) is not int or not 1 <= limit <= _MAX_RESULTS:
+            raise UserFacingError(f"'limit' phải là số nguyên từ 1 đến {_MAX_RESULTS}")
 
     def _allowed_url(self, url: str) -> bool:
-        host = (urlparse(url).hostname or "").lower()
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        if parsed.username is not None or parsed.password is not None:
+            return False
+        host = (parsed.hostname or "").lower().rstrip(".")
         if not host:
             return False
         return _host_allowed(host, self._allow)
@@ -78,14 +96,35 @@ class WebSearchTool:
 
     async def run(self, args: dict, ctx: ToolCtx) -> ToolResult:
         key = self._resolve_key()  # lấy tại điểm dùng, không log
-        results = await self._search(args["query"], key)
-        limit = int(args.get("limit", 5))
+        try:
+            results = await self._search(args["query"].strip(), key)
+        except UserFacingError as e:
+            # A custom/proxied backend may reflect the request header in its error.
+            raise UserFacingError(str(e).replace(key, "[REDACTED]")) from e
+        except Exception as e:
+            # Unknown backend errors are not safe to expose and must not crash the turn.
+            raise UserFacingError("[DENIED] web_search backend lỗi") from e
+        if not isinstance(results, list):
+            raise UserFacingError("[DENIED] web_search backend trả payload không hợp lệ")
+        limit = args.get("limit", 5)
         kept: list[dict] = []
         blocked = 0
         for r in results:
+            if not isinstance(r, dict):
+                blocked += 1
+                continue
             url = str(r.get("url") or "")
             if self._allowed_url(url):
-                kept.append(r)
+                # Defense in depth for compromised/custom search endpoints that reflect
+                # the API key into title/snippet/URL. Generic regex redaction cannot know
+                # every provider's key format, but this tool has the exact value in scope.
+                kept.append(
+                    {
+                        "title": str(r.get("title") or "").replace(key, "[REDACTED]"),
+                        "url": url.replace(key, "[REDACTED]"),
+                        "snippet": str(r.get("snippet") or "").replace(key, "[REDACTED]"),
+                    }
+                )
             else:
                 blocked += 1
             if len(kept) >= limit:

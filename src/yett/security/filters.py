@@ -96,8 +96,8 @@ def apply(result: ToolResult, *, untrusted: bool = False) -> ToolResult:
     content = redact(result.content)
     if untrusted and scan_injection(content):
         content = (
-            "[⚠️ nội dung từ nguồn ngoài chứa dấu hiệu prompt-injection — đã cách ly]\n"
-            + content
+            "[DENIED] nội dung từ nguồn ngoài chứa dấu hiệu prompt-injection — "
+            "đã cách ly và không đưa nội dung đó vào context"
         )
     # span_attrs (cost ledger...) giữ nguyên — đã là metadata số/tên, không phải tool body;
     # SpanStore vẫn chạy redact_attrs trước khi ghi.
