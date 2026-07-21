@@ -58,6 +58,11 @@ class AnthropicProvider:
     async def chat(
         self, messages: list[Message], tools: list[ToolSchema], *, stream: bool = False
     ) -> ChatResult:
+        if stream:
+            raise ProviderError(
+                FailReason.BAD_REQUEST,
+                "Anthropic streaming is not supported by the aggregated ChatResult transport",
+            )
         system, api_messages = _to_anthropic_messages(messages)
         body: dict = {
             "model": self._model,
