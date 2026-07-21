@@ -417,6 +417,16 @@ async def test_native_transport_exceptions_are_canonical(error: Exception, reaso
     assert ei.value.reason == reason
 
 
+async def test_arbitrary_injected_transport_error_is_canonical_and_secret_safe() -> None:
+    async def transport(url, headers, body):
+        raise RuntimeError(f"proxy failed with headers={headers}")
+
+    with pytest.raises(ProviderError) as ei:
+        await _provider(transport).chat([Message(role="user", content="hi")], [])
+    assert ei.value.reason == FailReason.NETWORK
+    assert SECRET not in str(ei.value)
+
+
 async def test_default_transport_enforces_configured_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -492,6 +502,25 @@ async def test_malformed_response_is_retryable_server_failure() -> None:
             "model": "x",
             "content": [],
             "stop_reason": "pause_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        },
+        {
+            "type": "message",
+            "role": "assistant",
+            "model": "x",
+            "content": [
+                {"type": "tool_use", "id": "duplicate", "name": "exec", "input": {}},
+                {"type": "tool_use", "id": "duplicate", "name": "read_file", "input": {}},
+            ],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        },
+        {
+            "type": "message",
+            "role": "assistant",
+            "model": "x",
+            "content": [{"type": "unexpected_future_block", "value": "must not vanish"}],
+            "stop_reason": "end_turn",
             "usage": {"input_tokens": 1, "output_tokens": 1},
         },
     ],

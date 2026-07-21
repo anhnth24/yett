@@ -100,6 +100,11 @@ class AnthropicProvider:
             raise ProviderError(FailReason.TIMEOUT, "request timed out") from None
         except OSError as exc:
             raise ProviderError(FailReason.NETWORK, _redact(str(exc), self._key)) from None
+        except Exception:
+            # Injected proxy/test transports are not trusted to produce secret-safe exception
+            # strings (they may include the full headers mapping).  Canonicalize instead of
+            # letting an implementation-specific exception abort the agent loop.
+            raise ProviderError(FailReason.NETWORK, "Anthropic transport failed") from None
         if status != 200:
             raise ProviderError(_map_status(status, data), _safe_err(data, status, self._key))
         return _parse_response(data, self._model, self._name, self._key)
@@ -197,6 +202,7 @@ def _parse_response(data: object, model: str, provider_name: str, api_key: str) 
         raise _malformed("content missing/not list", data, api_key)
     text_parts: list[str] = []
     tool_calls: list[ToolCall] = []
+    tool_call_ids: set[str] = set()
     has_thinking = False
     for block in content:
         if not isinstance(block, dict):
@@ -217,11 +223,16 @@ def _parse_response(data: object, model: str, provider_name: str, api_key: str) 
                 raise _malformed("tool_use id missing/not string", data, api_key)
             if not isinstance(name, str) or not name:
                 raise _malformed("tool_use name missing/not string", data, api_key)
+            if call_id in tool_call_ids:
+                raise _malformed(f"duplicate tool_use id {call_id!r}", data, api_key)
+            tool_call_ids.add(call_id)
             tool_calls.append(
                 ToolCall(id=call_id, name=name, args=raw_input)
             )
         elif btype in ("thinking", "redacted_thinking"):
             has_thinking = True
+        else:
+            raise _malformed(f"unsupported content block type {btype!r}", data, api_key)
     usage_raw = data.get("usage")
     if not isinstance(usage_raw, dict):
         raise _malformed("usage missing/not object", data, api_key)
