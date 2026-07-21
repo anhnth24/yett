@@ -9,7 +9,10 @@ import os
 import stat
 import time
 from pathlib import Path, PurePosixPath
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from yett.tools.remote.vpn import VpnManager
 
 from yett.config.models import HarnessCfg
 from yett.core.cancel import CancelToken
@@ -256,9 +259,11 @@ class App:
         if cfg.image is not None and secrets is not None:
             self._wire_image(image_fn)
 
-        # Remote ops (SSH/VPN/log): host registry cần trước khi tạo Gate (Gate phân lớp theo host).
+        # Remote ops (SSH/VPN/log): host registry + VPN cần trước khi tạo Gate
+        # (Gate phân lớp theo host / allowlist vpn profile).
         self.host_registry: HostRegistry | None = None
-        if cfg.remote.hosts:
+        self.vpn_manager: VpnManager | None = None
+        if cfg.remote.hosts or cfg.remote.vpn_profiles:
             self._wire_remote()
 
         # Immutable core hardline TRƯỚC gate cấu hình: cấm sửa policy/identity + hardline
@@ -286,8 +291,10 @@ class App:
             )
         except (OSError, ValueError):
             pass
+        vpn_names = set(cfg.remote.vpn_profiles) if cfg.remote.vpn_profiles else None
         self.gate: PolicyGate = _ImmutableFirstGate(
-            ImmutableCore(protected), BasicGate(cfg.security, hosts=self.host_registry)
+            ImmutableCore(protected),
+            BasicGate(cfg.security, hosts=self.host_registry, vpn_profiles=vpn_names),
         )
         # Hooks: rỗng mặc định (điểm cắm sẵn; nạp hook từ config sau).
         from yett.hooks.runner import HookRunner
@@ -399,6 +406,7 @@ class App:
         from yett.tools.remote.hostprofile import HostProfile
         from yett.tools.remote.ssh_backend import AsyncSSHBackend
         from yett.tools.remote.ssh_exec import LogReadTool, SshExecTool
+        from yett.tools.remote.vpn import SubprocessVpnRunner, VpnManager, VpnTool
 
         hosts = {}
         for name, h in self.cfg.remote.hosts.items():
@@ -407,11 +415,38 @@ class App:
                 address=addr, auth=h.auth, port=h.port, vpn_required=h.vpn_required,
                 tier=h.tier, log_paths=h.log_paths, deploy_script=h.deploy_script,
             )
-        self.host_registry = HostRegistry(hosts)
-        backend = AsyncSSHBackend()
-        # VPN CLI runner (openvpn/openfortivpn) chưa nối → vpn=None; SSH vẫn chạy nếu không cần VPN.
-        self.registry.register(SshExecTool(self.host_registry, backend, self._secrets, vpn=None))
-        self.registry.register(LogReadTool(self.host_registry, backend, self._secrets, vpn=None))
+        self.host_registry = HostRegistry(hosts) if hosts else None
+        vpn = None
+        profiles = dict(self.cfg.remote.vpn_profiles)
+        if profiles:
+            if self._secrets is None:
+                raise UserFacingError(
+                    "remote.vpn_profiles đã khai nhưng secret store không có — fail-closed"
+                )
+            # Fail-closed sớm: host.vpn_required phải ∈ vpn_profiles.
+            for hn, h in self.cfg.remote.hosts.items():
+                if h.vpn_required and h.vpn_required not in profiles:
+                    raise UserFacingError(
+                        f"host '{hn}' vpn_required='{h.vpn_required}' không có trong "
+                        "remote.vpn_profiles — fail-closed"
+                    )
+            runner = SubprocessVpnRunner(profiles)
+            vpn = VpnManager(runner, self._secrets, profiles)
+            self.vpn_manager = vpn
+            self.registry.register(VpnTool(vpn))
+        elif any(h.vpn_required for h in self.cfg.remote.hosts.values()):
+            raise UserFacingError(
+                "có host.vpn_required nhưng remote.vpn_profiles trống — fail-closed "
+                "(khai VPN profile hoặc bỏ vpn_required)"
+            )
+        if self.host_registry is not None:
+            backend = AsyncSSHBackend()
+            self.registry.register(
+                SshExecTool(self.host_registry, backend, self._secrets, vpn=vpn)
+            )
+            self.registry.register(
+                LogReadTool(self.host_registry, backend, self._secrets, vpn=vpn)
+            )
 
     def _wire_subagents(self) -> None:
         from yett.subagent.delegate import DelegateCtx, DelegateTool
@@ -466,6 +501,8 @@ class App:
             lines.append(f"Database (chỉ đọc): {', '.join(self.cfg.databases)}")
         if self.cfg.remote.hosts:
             lines.append(f"Server SSH: {', '.join(self.cfg.remote.hosts)}")
+        if self.cfg.remote.vpn_profiles:
+            lines.append(f"VPN profile: {', '.join(self.cfg.remote.vpn_profiles)}")
         if self.skill_loader is not None:
             menu = self.skill_loader.menu()
             if menu:

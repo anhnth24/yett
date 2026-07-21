@@ -35,8 +35,10 @@ yett usage --by provider --state state
 ## Lưu ý WSL2 (từ P0.5.1)
 - **Hiệu năng file:** project nằm trên `/mnt/c` hoặc `/mnt/d` (NTFS) sẽ chậm với git/exec.
   Nếu chậm, cân nhắc clone project hay dùng vào ext4 của WSL (`~/work/...`) và trỏ `projects.path` vào đó.
-- **VPN (FortiClient):** nếu FortiClient chạy trên Windows host, kiểm tra traffic SSH từ WSL2
-  có đi qua tunnel không. Nếu không, dùng `openfortivpn` trong WSL2 (khai trong config vpn).
+- **VPN:** khai `remote.vpn_profiles` (`openfortivpn`/`openvpn`), đặt secret, rồi
+  `yett vpn connect <profile>` hoặc để SSH tự pre-connect khi `host.vpn_required` khớp.
+  Nếu FortiClient chạy trên Windows host, kiểm tra traffic SSH từ WSL2 có đi qua tunnel
+  không; nếu không, dùng `openfortivpn` trong WSL2.
 - **Docker:** bật "WSL integration" trong Docker Desktop Settings cho distro đang dùng.
 
 ## Backup / Restore

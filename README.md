@@ -42,7 +42,7 @@ Chọn 1 trong 10+ model top (GLM 5.2, MiniMax M3, DeepSeek, Gemini, GPT-5.5, Cl
 | Tracing + span store + cost ledger | ✅ e2e | `test_obs` |
 | Memory: workspace file (AGENTS/SOUL/MEMORY.md → system prompt) **(wired vào `yett chat`)** | ✅ e2e | `test_memory`, verify `App.chat` |
 | Memory: review gate (staging cho agent đề xuất ghi MEMORY.md) **(wired vào `yett chat` + CLI)** | ✅ e2e — tool `memory_propose` đăng ký qua App → Gate→Registry→Filters, chỉ ghi `memory/pending/`; `write_file`/`ImmutableCore` chặn ghi thẳng `MEMORY.md`; người vận hành `yett memory list\|approve\|reject` | `test_memory`, `test_memory_review`, `test_memory_write_invariant` |
-| Remote ops: host profile + ssh_exec + log_read + vpn | 🟡 fake (backend inject, chưa SSH/VPN thật) | `test_remote_db` |
+| Remote ops: host profile + ssh_exec + log_read + vpn | 🟡 fake/wired — SSH/VPN CLI runner inject được; App wire `SubprocessVpnRunner` (openfortivpn/openvpn, argv-only, secret qua file tạm 0600); **chưa verify tunnel thật** trên máy này | `test_remote_db`, `test_vpn_runner` |
 | DB tools: db_query/db_config read-only 4 lớp | 🟡 fake (executor inject, chưa DB thật ngoài sqlite) | `test_remote_db` |
 | Skills: loader + disclosure + lint + review gate **(wired vào `yett chat`)** | ✅ e2e | `test_skills_hooks_sched`, `test_group2_wired` |
 | Hooks: mutate/deny + cách ly lỗi **(wired)** | ✅ e2e | `test_skills_hooks_sched` |
@@ -63,7 +63,7 @@ Chọn 1 trong 10+ model top (GLM 5.2, MiniMax M3, DeepSeek, Gemini, GPT-5.5, Cl
 | **Code navigation: list_dir/grep/search scoped** + complexity router + anti-loop step-budget | ✅ e2e | `test_codenav`, `test_complexity`, `test_core_loop` |
 | **Kênh Telegram: long-poll + gating/pairing + dispatch→App.chat + notify tool + briefing tự động** **(wired vào `yett serve`)** | 🟡 fake — logic đúng qua transport inject (getUpdates/sendMessage), dispatch chạy App.chat thật; **chưa gọi api.telegram.org thật** (cần bot token) | `test_telegram`, `test_assistant` (notify + e2e dispatch) |
 | **Kênh Zalo Official Bot API** (không Zalo Personal): poll/webhook + gating/pairing + normalize/chunk ≤2000 + dispatch→App.chat + notify + token redact + fail-closed webhook config **(wired vào `yett serve` / config / capabilities)** | 🟡 fake — contract offline qua transport inject (`bot-api.zaloplatforms.com` shape: `getUpdates` single-object + timeout string, `sendMessage`, webhook `X-Bot-Api-Secret-Token`); **chưa gọi Bot API thật** (cần token từ [bot.zaloplatforms.com](https://bot.zaloplatforms.com); assumptions ghi trong `channels/zalo_bot.py`) | `test_zalo_bot`, `test_zalo_channel_wired`, `test_assistant` (zalo dispatch) |
-| VPN/SSH CLI thật | ⏳ interface + backend inject sẵn, cần tài nguyên ngoài để nối | — |
+| VPN/SSH CLI thật | 🟡 wired — `SubprocessVpnRunner` + tool `vpn` + `yett vpn` + SSH pre-connect `ensure`; adversarial offline tests; **chưa quan sát openfortivpn/openvpn live** | `test_vpn_runner` |
 
 ## Repo này sẽ làm gì
 
@@ -114,7 +114,7 @@ Nhãn phase theo lộ trình: **[v0.1]** MVP → **[v0.2]** mở rộng cho agen
 Use-case đầu tiên: trợ lý DevOps cá nhân chạy local — quản lý project, báo cáo tiến độ, code, deploy UAT, điều tra lỗi, kiểm tra dữ liệu (spec: `docs/harness-local-use-case.md`).
 
 - **[v0.2] SSH remote ops** — chỉ đến host khai báo trong profile config; lệnh phân lớp: read-only log/status tự động cho phép, deploy script khai báo trước phải approval từng lần, còn lại mặc định từ chối. **Hardline: tuyệt đối không lệnh xóa file OS qua SSH/VPN** (rm, find -delete, xargs rm, mọi biến thể né tránh) — không có đường approval; xóa hợp lệ duy nhất là bên trong deploy script do người dùng tự viết.
-- **[v0.2] VPN** — bọc OpenVPN/Fortinet client (đánh giá openfortivpn), tự bật trước khi SSH nếu host yêu cầu; credentials nằm trong secret store, không bao giờ vào context của model.
+- **[v0.2] VPN** — bọc `openfortivpn` / `openvpn` (argv cố định từ profile allowlist, không shell, không flag từ model); tự bật trước khi SSH nếu `host.vpn_required`; credentials qua secret store → file tạm 0600 (cleanup bắt buộc), không vào context/span/log/error. Operator: `yett vpn connect|disconnect|status <profile>`.
 - **[v0.2] Query DB an toàn** — connection profile trong secret store (model chỉ thấy tên profile); phòng thủ 4 lớp: DB user read-only → session read-only → SQL classifier trong Policy Gate (chỉ SELECT/SHOW/EXPLAIN/DESCRIBE; parse fail = từ chối) → approval tường minh từng câu cho write. **Hardline: không ALTER/DROP/TRUNCATE/DELETE/UPDATE nếu không được phép tường minh.**
 - **[v0.2] Báo cáo tiến độ project** — skill tổng hợp từ workspace các project + git log, chạy tay hoặc theo cron.
 

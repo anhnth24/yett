@@ -56,8 +56,10 @@ projects:
    `stdin_open/tty`). Hoặc v0.3 thêm Telegram để giao việc từ xa, không cần terminal.
 3. **File project mount từ ổ Windows** vào container vẫn **chậm I/O** (giống hạn chế WSL `/mnt`).
    Project hay dùng nên copy vào volume `yett-workspace` hoặc ext4.
-4. **VPN/SSH ra ngoài**: SSH client có trong image. VPN (openfortivpn) trong container cần
-   quyền `NET_ADMIN` + `/dev/net/tun` — cấu hình thêm khi tính năng VPN được nối (chưa có ở bản này).
+4. **VPN/SSH ra ngoài**: SSH client có trong image. Tool/CLI VPN (`openfortivpn`/`openvpn`)
+   đã wire sẵn; trong container cần thêm `NET_ADMIN` + `/dev/net/tun` (và cài binary) nếu
+   muốn bật tunnel từ trong container — mặc định khuyến nghị chạy VPN trên WSL2 host rồi
+   SSH từ yett.
 5. **Dữ liệu**: state/workspace/secrets nằm trong Docker **named volume** (giữ qua restart).
    Backup: `docker run --rm -v yett-state:/s -v $PWD:/b busybox tar czf /b/state.tgz -C /s .`
 6. **Cập nhật**: `git pull` rồi `docker compose build` lại; volume dữ liệu giữ nguyên.
@@ -209,8 +211,10 @@ yett usage --by provider --state state  # chi phí theo provider
 
 - **Hiệu năng file:** project trên `/mnt/c` `/mnt/d` (ổ Windows/NTFS) chạy git/exec **chậm**.
   Nếu chậm, clone project hay dùng vào ext4 của WSL (`~/work/...`) và trỏ `projects.path` vào đó.
-- **VPN (FortiClient):** nếu chạy trên Windows host, kiểm tra SSH từ WSL2 có qua tunnel không;
-  nếu không, cài `openfortivpn` trong WSL2. (Tính năng SSH/VPN ở giai đoạn nối backend — xem README.)
+- **VPN:** khai `remote.vpn_profiles` (`kind: openfortivpn|openvpn`), đặt secret password,
+  rồi `yett vpn connect <profile>` hoặc để SSH tự `ensure` khi `host.vpn_required` khớp.
+  Nếu FortiClient chạy trên Windows host, kiểm tra SSH từ WSL2 có qua tunnel không; nếu
+  không, dùng `openfortivpn` trong WSL2. Chưa claim đã verify routing trên mọi máy.
 - **Docker:** phải bật WSL integration trong Docker Desktop. Không có Docker → đặt tạm
   `sandbox.backend: local` trong config (kém cô lập hơn, chỉ dùng dev).
 
