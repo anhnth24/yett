@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+import yett.memory.review_gate as review_mod
 from yett.app import App
 from yett.config.models import BudgetCfg, HarnessCfg, ProviderCfg, SandboxCfg, SecurityCfg
 from yett.memory.review_gate import (
@@ -41,6 +43,17 @@ _WINDOWS_ONLY = pytest.mark.skipif(os.name != "nt", reason="Windows path backend
         ("a/b", False),
         ("a\\b", False),
         ("a\x00b", False),
+        ("audit:stream", False),
+        ("CON", False),
+        ("nul.txt", False),
+        ("COM1.log", False),
+        ("LPT³", False),
+        ("trailing.", False),
+        ("trailing ", False),
+        (" leading", False),
+        ("question?.md", False),
+        ("a" * 256, False),
+        ("\ud800", False),
     ],
 )
 def test_is_safe_entry_name(name: str, ok: bool) -> None:
@@ -80,6 +93,100 @@ def test_is_reparse_path_real_symlink(tmp_path: Path) -> None:
         pytest.skip(f"symlink unavailable: {exc}")
     assert _is_reparse_path(link) is True
     assert _is_reparse_path(target) is False
+
+
+def test_windows_named_proposal_creation_is_exclusive(tmp_path: Path) -> None:
+    name = "a" * 32 + ".md"
+    MemoryReviewGate._windows_create_named_proposal(tmp_path, name, "original")
+    with pytest.raises(FileExistsError):
+        MemoryReviewGate._windows_create_named_proposal(tmp_path, name, "replacement")
+    assert (tmp_path / name).read_text(encoding="utf-8") == "original"
+
+
+def test_windows_atomic_replace_closes_source_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MoveFileExW rejects the default CRT handle while it is still open."""
+    real_open = review_mod.os.open
+    real_replace = review_mod.os.replace
+    temp_fd: int | None = None
+
+    def tracking_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal temp_fd
+        if dir_fd is None:
+            fd = real_open(path, flags, mode)
+        else:
+            fd = real_open(path, flags, mode, dir_fd=dir_fd)
+        if str(path).endswith(".tmp"):
+            temp_fd = fd
+        return fd
+
+    def asserting_replace(source, destination, *args, **kwargs):
+        assert temp_fd is not None
+        with pytest.raises(OSError):
+            os.fstat(temp_fd)
+        return real_replace(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(review_mod.os, "open", tracking_open)
+    monkeypatch.setattr(review_mod.os, "replace", asserting_replace)
+
+    snapshot = MemoryReviewGate._windows_atomic_write_at(
+        tmp_path, "MEMORY.md", "atomic", expected=None
+    )
+    assert snapshot[3] == review_mod.hashlib.sha256(b"atomic").hexdigest()
+    assert (tmp_path / "MEMORY.md").read_text(encoding="utf-8") == "atomic"
+
+
+def test_windows_read_rejects_reparse_swap_between_check_and_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controlled = tmp_path / "controlled"
+    controlled.write_text("inside", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.write_text("outside secret", encoding="utf-8")
+    real_open = review_mod.os.open
+    swapped = False
+
+    def racing_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if Path(path) == controlled and not swapped:
+            controlled.unlink()
+            controlled.symlink_to(outside)
+            swapped = True
+        if dir_fd is None:
+            return real_open(path, flags, mode)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    # Model Windows, where O_NOFOLLOW is unavailable and a CRT open follows the
+    # reparse point introduced after the initial lstat.
+    monkeypatch.setattr(review_mod.os, "O_NOFOLLOW", 0)
+    monkeypatch.setattr(review_mod.os, "open", racing_open)
+    with pytest.raises(MemoryReviewError, match="TOCTOU"):
+        MemoryReviewGate._windows_read_regular_snapshot_at(tmp_path, controlled.name)
+
+
+def test_windows_lock_and_unlock_same_first_byte(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fd = os.open(tmp_path / "lock", os.O_RDWR | os.O_CREAT, 0o600)
+    calls: list[tuple[int, int, int]] = []
+    fake_msvcrt = SimpleNamespace(LK_LOCK=1, LK_UNLCK=2)
+
+    def locking(locked_fd: int, mode: int, count: int) -> None:
+        calls.append((mode, count, os.lseek(locked_fd, 0, os.SEEK_CUR)))
+
+    fake_msvcrt.locking = locking
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+    monkeypatch.setattr(review_mod.os, "name", "nt")
+    try:
+        MemoryReviewGate._lock_file(fd)
+        os.lseek(fd, 1, os.SEEK_SET)
+        MemoryReviewGate._unlock_file(fd)
+        assert calls == [(fake_msvcrt.LK_LOCK, 1, 0), (fake_msvcrt.LK_UNLCK, 1, 0)]
+        os.lseek(fd, 0, os.SEEK_SET)
+        assert os.read(fd, 1) == b"\0"
+    finally:
+        os.close(fd)
 
 
 @_WINDOWS_ONLY

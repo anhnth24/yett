@@ -45,6 +45,16 @@ _THREAD_LOCKS_GUARD = threading.Lock()
 _FileSnapshot = tuple[int, int, int, str]  # device, inode, permission mode, content hash
 _DirRef = int | Path
 _FILE_ATTRIBUTE_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+_WINDOWS_BINARY = getattr(os, "O_BINARY", 0)
+_WINDOWS_FORBIDDEN_NAME_CHARS = frozenset('<>:"/\\|?*')
+_WINDOWS_RESERVED_BASENAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{suffix}" for suffix in (*range(1, 10), "¹", "²", "³")),
+    *(f"LPT{suffix}" for suffix in (*range(1, 10), "¹", "²", "³")),
+}
 
 
 class MemoryReviewError(UserFacingError, ValueError):
@@ -75,12 +85,24 @@ def _entry_hash(prev_hash: str, entry: dict) -> str:
 
 
 def _is_safe_entry_name(name: str) -> bool:
-    """True for a single path component that cannot escape its parent directory."""
+    """True for one unambiguous Win32-safe path component.
+
+    The Windows backend only passes fixed control names and generated UUID names here,
+    but rejecting Win32 aliases (device names, ADS separators, and trimmed suffixes)
+    keeps this boundary safe if another caller is added later.
+    """
     if not isinstance(name, str) or not name or name in {".", ".."}:
         return False
-    if "\x00" in name or "/" in name or "\\" in name:
+    if any(ord(char) < 32 or char in _WINDOWS_FORBIDDEN_NAME_CHARS for char in name):
         return False
-    if os.sep in name or (os.altsep is not None and os.altsep in name):
+    if name[0] == " " or name[-1] in {" ", "."}:
+        return False
+    if name.split(".", 1)[0].upper() in _WINDOWS_RESERVED_BASENAMES:
+        return False
+    try:
+        if len(name.encode("utf-16-le")) // 2 > 255:
+            return False
+    except UnicodeEncodeError:
         return False
     return True
 
@@ -150,6 +172,24 @@ def _snapshot_from_open_fd(fd: int, name: str) -> tuple[str, _FileSnapshot]:
         hashlib.sha256(data).hexdigest(),
     )
     return data.decode("utf-8"), snapshot
+
+
+def _windows_verify_open_regular(fd: int, path: Path, name: str) -> None:
+    """Require an open handle to still name the checked non-reparse file."""
+    try:
+        opened = os.fstat(fd)
+        named = os.lstat(path)
+    except OSError as exc:
+        raise MemoryReviewError(
+            f"file memory '{name}' đổi trong lúc mở; từ chối TOCTOU"
+        ) from exc
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or not stat.S_ISREG(named.st_mode)
+        or _is_reparse_lstat(named)
+        or _stat_identity(opened) != _stat_identity(named)
+    ):
+        raise MemoryReviewError(f"file memory '{name}' đổi trong lúc mở; từ chối TOCTOU")
 
 
 class MemoryReviewGate:
@@ -373,8 +413,7 @@ class MemoryReviewGate:
                     os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
                     0o600,
                 )
-                if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
-                    raise MemoryReviewError("memory review lock không phải regular file")
+                _windows_verify_open_regular(lock_fd, lock_path, MEMORY_LOCK_FILENAME)
                 self._lock_file(lock_fd)
                 if _is_reparse_path(self._root) or not self._root.is_dir():
                     raise MemoryReviewError("workspace memory không an toàn/không tồn tại")
@@ -539,7 +578,11 @@ class MemoryReviewGate:
             raise FileExistsError(name)
         fd = os.open(
             path,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+            | _WINDOWS_BINARY,
             0o600,
         )
         try:
@@ -589,7 +632,9 @@ class MemoryReviewGate:
         if path is None:
             return None
         try:
-            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            fd = os.open(
+                path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | _WINDOWS_BINARY
+            )
         except FileNotFoundError:
             return None
         except OSError as exc:
@@ -597,7 +642,10 @@ class MemoryReviewGate:
                 f"từ chối đọc file memory không an toàn '{name}': {exc}"
             ) from exc
         try:
-            return _snapshot_from_open_fd(fd, name)
+            _windows_verify_open_regular(fd, path, name)
+            item = _snapshot_from_open_fd(fd, name)
+            _windows_verify_open_regular(fd, path, name)
+            return item
         finally:
             os.close(fd)
 
@@ -707,7 +755,11 @@ class MemoryReviewGate:
         final_path = _child_under_root(directory, name)
         fd = os.open(
             tmp_path,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+            | _WINDOWS_BINARY,
             current[2] if current else 0o600,
         )
         try:
@@ -727,6 +779,10 @@ class MemoryReviewGate:
                     raise MemoryReviewError(
                         f"từ chối ghi file memory không an toàn '{name}'"
                     )
+            # CRT opens do not share delete access on Windows.  MoveFileExW (used by
+            # os.replace) therefore cannot rename this source while the fd remains open.
+            os.close(fd)
+            fd = -1
             os.replace(tmp_path, final_path)
             cls._windows_fsync_dir(directory)
             replaced = cls._read_regular_snapshot_at(directory, name)
@@ -736,7 +792,8 @@ class MemoryReviewGate:
                 )
             return replaced[1]
         finally:
-            os.close(fd)
+            if fd >= 0:
+                os.close(fd)
             try:
                 os.unlink(tmp_path)
             except FileNotFoundError:
