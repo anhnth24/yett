@@ -137,7 +137,17 @@ sandbox:
 # Thêm api.search.brave.com vào egress.allowlist bên dưới. Kết quả URL ngoài allowlist bị lọc.
 # Nhớ thêm rule: { tool: web_search, effect: allow } ở security.allowlist.
 
-# ---- Egress allowlist (domain web_fetch/search được phép) ----
+# ---- image_gen (OpenAI-compatible Images API; key trong secret store) ----
+# image:
+#   provider: openai_compat
+#   model: dall-e-3
+#   api_key_secret: image_key    # export YETT_SECRET_IMAGE_KEY="sk-..."
+#   # base_url: https://api.openai.com/v1   # mặc định; đổi nếu dùng proxy/self-host
+#   response_format: b64_json    # b64_json (khuyến nghị) | url (tải qua egress allowlist)
+# Host API (api.openai.com) phải có trong egress.allowlist. Ảnh chỉ ghi trong workspace.
+# Nhớ thêm rule: { tool: image_gen, effect: allow } ở security.allowlist.
+
+# ---- Egress allowlist (domain web_fetch/search/image được phép) ----
 egress:
   allowlist:
     - api.z.ai               # GLM (quốc tế)
@@ -145,7 +155,7 @@ egress:
     - api.minimax.io         # MiniMax
     - api.deepseek.com       # DeepSeek
     - generativelanguage.googleapis.com  # Gemini
-    - api.openai.com         # OpenAI
+    - api.openai.com         # OpenAI (+ image_gen mặc định)
     - api.anthropic.com      # Anthropic
     - api.telegram.org       # Kênh Telegram (nếu bật channels.telegram)
     # - api.search.brave.com # web_search (Brave) — bỏ comment nếu bật search ở trên

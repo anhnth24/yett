@@ -87,6 +87,18 @@ class SearchCfg(BaseModel):
     base_url: str | None = None  # mặc định theo provider; override khi self-host/proxy
 
 
+class ImageCfg(BaseModel):
+    """Cấu hình image_gen. API key chỉ là TÊN secret — giá trị nằm ở secret store."""
+
+    api_key_secret: str
+    provider: Literal["openai_compat"] = "openai_compat"
+    model: str = "dall-e-3"
+    # Mặc định OpenAI Images API; override khi dùng endpoint OpenAI-compatible khác.
+    base_url: str | None = None
+    # b64_json = không tải URL ngoài; url = tải ảnh qua egress allowlist (fail-closed).
+    response_format: Literal["b64_json", "url"] = "b64_json"
+
+
 class HostCfg(BaseModel):
     """Server SSH khai báo trước (spec P2 §2.1). Host lạ → deny (không SSH đại)."""
 
@@ -131,6 +143,7 @@ class HarnessCfg(BaseModel):
     remote: RemoteCfg = Field(default_factory=RemoteCfg)
     channels: ChannelsCfg = Field(default_factory=ChannelsCfg)
     search: SearchCfg | None = None
+    image: ImageCfg | None = None
     egress: EgressCfg = Field(default_factory=EgressCfg)
     sandbox: SandboxCfg = Field(default_factory=SandboxCfg)
     security: SecurityCfg = Field(default_factory=SecurityCfg)

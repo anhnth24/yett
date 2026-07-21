@@ -61,6 +61,8 @@ def secrets_status(app: "App") -> list[dict[str, Any]]:
         add(db.dsn_secret, f"db_query · {n}")
     if cfg.search:
         add(cfg.search.api_key_secret, "web_search")
+    if cfg.image:
+        add(cfg.image.api_key_secret, "image_gen")
     for hn, h in cfg.remote.hosts.items():
         if h.auth.startswith("keyfile:"):
             add(h.auth.split(":", 1)[1], f"ssh_exec · {hn}")
