@@ -20,7 +20,14 @@ Approver = Callable[[str, dict], Awaitable[bool]]
 Auditor = Callable[..., None]
 
 # Tool có kết quả từ nguồn ngoài → cần scan injection.
-_UNTRUSTED_TOOLS = {"web_fetch", "web_search", "read_file", "log_read", "ssh_exec"}
+_UNTRUSTED_TOOLS = {
+    "web_fetch",
+    "web_search",
+    "image_gen",
+    "read_file",
+    "log_read",
+    "ssh_exec",
+}
 
 
 def _resolve_db_driver_hint(registry: Registry, args: dict) -> str | None:
@@ -127,7 +134,7 @@ async def execute_tool(
         raw = await tool.run(args, ctx)
     except UserFacingError as e:
         # Lỗi agent-đọc-được (sai schema, path ngoài scope...) → trả về để agent tự sửa.
-        return ToolResult.error(str(e))
+        raw = ToolResult.error(str(e))
 
     result = filter_apply(raw, untrusted=name in _UNTRUSTED_TOOLS)
 

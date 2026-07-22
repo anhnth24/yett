@@ -379,6 +379,7 @@ class App:
             model=icfg.model,
             base_url=icfg.base_url,
             response_format=icfg.response_format,
+            timeout_sec=icfg.timeout_sec,
         )
         cost = compute_call_cost(icfg.provider, icfg.model, self._pricing)
         self.registry.register(
@@ -390,6 +391,7 @@ class App:
                 cost_usd=cost,
                 cost_provider=icfg.provider,
                 cost_model=icfg.model,
+                timeout_sec=icfg.timeout_sec,
             )
         )
 

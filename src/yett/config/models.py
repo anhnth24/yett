@@ -90,13 +90,18 @@ class SearchCfg(BaseModel):
 class ImageCfg(BaseModel):
     """Cấu hình image_gen. API key chỉ là TÊN secret — giá trị nằm ở secret store."""
 
-    api_key_secret: str
+    api_key_secret: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z_][A-Za-z0-9_-]*$",
+    )
     provider: Literal["openai_compat"] = "openai_compat"
-    model: str = "dall-e-3"
+    model: str = Field(default="dall-e-3", min_length=1, max_length=200)
     # Mặc định OpenAI Images API; override khi dùng endpoint OpenAI-compatible khác.
     base_url: str | None = None
     # b64_json = không tải URL ngoài; url = tải ảnh qua egress allowlist (fail-closed).
     response_format: Literal["b64_json", "url"] = "b64_json"
+    timeout_sec: float = Field(default=60.0, gt=0, le=300, allow_inf_nan=False)
 
 
 class HostCfg(BaseModel):

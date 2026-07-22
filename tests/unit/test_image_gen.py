@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ from yett.config.models import PriceRow
 from yett.errors import UserFacingError
 from yett.obs.cost import compute_call_cost
 from yett.secrets.backends import InMemorySecretStore
+from yett.tools.assist import image_gen as image_gen_mod
 from yett.tools.assist.image_backend import GeneratedImage, decode_b64_image
 from yett.tools.assist.image_gen import ImageGenTool
 from yett.tools.projects import ProjectScope
@@ -60,6 +62,7 @@ async def test_image_gen_writes_png_and_records_cost(tmp_path: Path) -> None:
     assert res.span_attrs["provider"] == "openai_compat"
     assert res.span_attrs["model"] == "dall-e-3"
     assert res.span_attrs["images"] == 1
+    assert res.span_attrs["size"] == "1024x1024"
     assert res.span_attrs["bytes"] == len(_PNG)
     assert SECRET not in str(res.span_attrs)
 
@@ -74,6 +77,9 @@ async def test_image_gen_writes_png_and_records_cost(tmp_path: Path) -> None:
         "images/foo.txt",
         "images/has space.png",
         "images/foo;rm.png",
+        "images/NUL.extra.png",
+        "images/COM¹.png",
+        "images/trailing./out.png",
         "",
     ],
 )
@@ -109,7 +115,7 @@ async def test_image_gen_rejects_path_traversal_via_symlink_root(tmp_path: Path)
     tool = ImageGenTool(
         backend, InMemorySecretStore({"k": SECRET}), "k", scope=_scope(ws)
     )
-    with pytest.raises(UserFacingError, match="ngoài workspace|bị từ chối"):
+    with pytest.raises(UserFacingError, match="ngoài workspace|từ chối"):
         await tool.run({"prompt": "x", "path": "link/evil.png"}, _Ctx())
     assert not (outside / "evil.png").exists()
 
@@ -125,7 +131,7 @@ async def test_image_gen_refuses_overwrite_symlink(tmp_path: Path) -> None:
     tool = ImageGenTool(
         _png_backend, InMemorySecretStore({"k": SECRET}), "k", scope=_scope(ws)
     )
-    with pytest.raises(UserFacingError, match="symlink"):
+    with pytest.raises(UserFacingError, match="symlink|reparse"):
         await tool.run({"prompt": "x", "path": "images/out.png"}, _Ctx())
     assert target.read_bytes() == b"KEEP"
     assert link.is_symlink()
@@ -141,8 +147,9 @@ async def test_image_gen_rejects_mime_extension_mismatch(tmp_path: Path) -> None
     tool = ImageGenTool(
         backend, InMemorySecretStore({"k": SECRET}), "k", scope=_scope(ws)
     )
-    with pytest.raises(UserFacingError, match="đuôi file không khớp"):
-        await tool.run({"prompt": "x", "path": "images/out.jpg"}, _Ctx())
+    result = await tool.run({"prompt": "x", "path": "images/out.jpg"}, _Ctx())
+    assert result.is_error
+    assert "đuôi file không khớp" in result.content
 
 
 async def test_image_gen_redacts_key_reflected_in_revised_prompt(tmp_path: Path) -> None:
@@ -177,6 +184,81 @@ async def test_image_gen_backend_errors_do_not_leak_key(tmp_path: Path) -> None:
     assert SECRET not in str(exc.value)
 
 
+async def test_provider_controlled_mime_is_not_echoed_in_error(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+
+    async def unsafe(prompt: str, key: str, *, size: str = "1024x1024") -> GeneratedImage:
+        return GeneratedImage(data=_PNG, mime=f"text/{key}")
+
+    tool = ImageGenTool(
+        unsafe,
+        InMemorySecretStore({"k": SECRET}),
+        "k",
+        scope=_scope(ws),
+        cost_usd=0.04,
+    )
+    result = await tool.run({"prompt": "x", "path": "a.png"}, _Ctx())
+    assert result.is_error
+    assert "MIME không khớp" in result.content
+    assert SECRET not in result.content
+    assert result.span_attrs["cost_usd"] == 0.04
+    assert result.span_attrs["images"] == 1
+
+
+async def test_image_gen_backend_timeout_is_safe(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+
+    async def hangs(prompt: str, key: str, *, size: str = "1024x1024") -> GeneratedImage:
+        await asyncio.sleep(60)
+        raise AssertionError("unreachable")
+
+    tool = ImageGenTool(
+        hangs,
+        InMemorySecretStore({"k": SECRET}),
+        "k",
+        scope=_scope(ws),
+        timeout_sec=0.001,
+    )
+    with pytest.raises(UserFacingError, match="hết thời gian") as exc:
+        await tool.run({"prompt": "x", "path": "a.png"}, _Ctx())
+    assert SECRET not in str(exc.value)
+    assert exc.value.__cause__ is None
+    assert not (ws / "a.png").exists()
+
+
+async def test_image_gen_task_cancellation_propagates_without_writing(
+    tmp_path: Path,
+) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def waits(prompt: str, key: str, *, size: str = "1024x1024") -> GeneratedImage:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        raise AssertionError("unreachable")
+
+    tool = ImageGenTool(
+        waits, InMemorySecretStore({"k": SECRET}), "k", scope=_scope(ws)
+    )
+    task = asyncio.create_task(
+        tool.run({"prompt": "x", "path": "a.png"}, _Ctx())
+    )
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert cancelled.is_set()
+    assert not (ws / "a.png").exists()
+
+
 async def test_image_gen_missing_secret_raises_user_facing(tmp_path: Path) -> None:
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -186,6 +268,16 @@ async def test_image_gen_missing_secret_raises_user_facing(tmp_path: Path) -> No
 
     tool = ImageGenTool(boom, InMemorySecretStore(), "missing", scope=_scope(ws))
     with pytest.raises(UserFacingError, match="chưa đặt"):
+        await tool.run({"prompt": "x", "path": "a.png"}, _Ctx())
+
+
+async def test_image_gen_rejects_whitespace_secret(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    tool = ImageGenTool(
+        _png_backend, InMemorySecretStore({"k": " \t "}), "k", scope=_scope(ws)
+    )
+    with pytest.raises(UserFacingError, match="rỗng"):
         await tool.run({"prompt": "x", "path": "a.png"}, _Ctx())
 
 
@@ -226,4 +318,67 @@ async def test_atomic_write_is_regular_file_mode_600(tmp_path: Path) -> None:
     )
     await tool.run({"prompt": "x", "path": "out.png"}, _Ctx())
     mode = os.stat(ws / "out.png").st_mode & 0o777
-    assert mode == 0o600
+    if os.name != "nt":
+        assert mode == 0o600
+
+
+async def test_path_backend_writes_and_rejects_parent_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.setattr(image_gen_mod, "_supports_secure_dir_fd", lambda: False)
+    tool = ImageGenTool(
+        _png_backend, InMemorySecretStore({"k": SECRET}), "k", scope=_scope(ws)
+    )
+
+    await tool.run({"prompt": "x", "path": "safe/out.png"}, _Ctx())
+    assert (ws / "safe" / "out.png").read_bytes() == _PNG
+
+    (ws / "link").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(UserFacingError, match="không an toàn|ngoài workspace"):
+        await tool.run({"prompt": "x", "path": "link/escape.png"}, _Ctx())
+    assert not (outside / "escape.png").exists()
+
+
+async def test_atomic_overwrite_replaces_regular_file(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    dest = ws / "out.png"
+    dest.write_bytes(b"old")
+    tool = ImageGenTool(
+        _png_backend, InMemorySecretStore({"k": SECRET}), "k", scope=_scope(ws)
+    )
+    await tool.run({"prompt": "x", "path": "out.png"}, _Ctx())
+    assert dest.read_bytes() == _PNG
+
+
+async def test_atomic_overwrite_rejects_destination_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    dest = ws / "out.png"
+    dest.write_bytes(b"old")
+    tool = ImageGenTool(
+        _png_backend, InMemorySecretStore({"k": SECRET}), "k", scope=_scope(ws)
+    )
+    original = tool._dest_snapshot
+    calls = 0
+
+    def changed(dir_fd: int, name: str) -> tuple[int, ...] | None:
+        nonlocal calls
+        calls += 1
+        snapshot = original(dir_fd, name)
+        if calls == 2 and snapshot is not None:
+            return (*snapshot[:-1], snapshot[-1] ^ 0o100)
+        return snapshot
+
+    monkeypatch.setattr(tool, "_dest_snapshot", changed)
+    result = await tool.run({"prompt": "x", "path": "out.png"}, _Ctx())
+    assert result.is_error
+    assert "TOCTOU" in result.content
+    assert dest.read_bytes() == b"old"
+    assert list(ws.glob(".*.tmp")) == []
