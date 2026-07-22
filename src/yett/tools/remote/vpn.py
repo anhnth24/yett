@@ -10,10 +10,15 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shlex
 import shutil
 import signal
 import stat
+import subprocess
+import sys
 import tempfile
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
@@ -25,6 +30,8 @@ from yett.security.filters import redact
 from yett.tools.base import ToolCtx, ToolResult
 
 _PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+_TERMINATE_SIGNAL = signal.SIGTERM
+_KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
 _BINARIES = {
     "openfortivpn": "openfortivpn",
     "openvpn": "openvpn",
@@ -33,9 +40,54 @@ _SUCCESS_MARKERS = {
     "openfortivpn": b"Tunnel is up",
     "openvpn": b"Initialization Sequence Completed",
 }
-# Grace period: process còn sống sau marker hoặc hết grace → coi như connected.
-_STABLE_WITHOUT_MARKER_SEC = 2.0
 _DISCONNECT_WAIT_SEC = 5.0
+_READINESS_STABLE_SEC = 0.25
+_MAX_CAPTURE_BYTES = 64_000
+_MAX_CONFIG_BYTES = 1_048_576
+_UNSAFE_OPENVPN_DIRECTIVES = {
+    "askpass",
+    "auth-gen-token-secret",
+    "auth-user-pass",
+    "auth-user-pass-verify",
+    "cd",
+    "chroot",
+    "client-connect",
+    "client-config-dir",
+    "client-crresponse",
+    "client-disconnect",
+    "config",
+    "daemon",
+    "down",
+    "down-pre",
+    "engine",
+    "ipchange",
+    "iproute",
+    "learn-address",
+    "log",
+    "log-append",
+    "management",
+    "management-client",
+    "management-client-auth",
+    "management-external-cert",
+    "management-external-key",
+    "management-hold",
+    "management-query-passwords",
+    "management-signal",
+    "management-up-down",
+    "plugin",
+    "pkcs11-providers",
+    "route-pre-down",
+    "route-up",
+    "script-security",
+    "status",
+    "tls-export-cert",
+    "tls-verify",
+    "tmp-dir",
+    "up",
+    "up-delay",
+    "up-restart",
+    "writepid",
+}
 
 
 class VpnRunner(Protocol):
@@ -44,49 +96,89 @@ class VpnRunner(Protocol):
     ) -> bool: ...
     async def disconnect(self, profile: str) -> bool: ...
     async def status(self, profile: str) -> bool: ...  # True = đang kết nối
+    def close(self) -> None: ...
 
 
 @dataclass
 class OwnedProcess:
-    """Process do yett spawn — chỉ disconnect được phiên mình sở hữu."""
+    """Process spawned by yett, retaining an exact-process signaling handle when possible."""
 
     pid: int
     argv0: str
-    _proc: Any  # asyncio.subprocess.Process | test double
+    _proc: Any  # subprocess.Popen | test double
     _stdout_buf: bytearray = field(default_factory=bytearray)
     _stderr_buf: bytearray = field(default_factory=bytearray)
-    _reader_tasks: list[asyncio.Task[None]] = field(default_factory=list)
+    _reader_threads: list[threading.Thread] = field(default_factory=list)
+    _output_lock: threading.Lock = field(default_factory=threading.Lock)
+    _capture_output: bool = True
+    _identity: str | None = None
+    _pidfd: int | None = None
 
     def returncode(self) -> int | None:
-        return getattr(self._proc, "returncode", None)
+        poll = getattr(self._proc, "poll", None)
+        value = poll() if callable(poll) else getattr(self._proc, "returncode", None)
+        if value is not None:
+            self._close_pidfd()
+        return int(value) if value is not None else None
 
     def terminate(self) -> None:
-        try:
-            self._proc.terminate()
-        except ProcessLookupError:
-            pass
+        self._signal(_TERMINATE_SIGNAL)
 
     def kill(self) -> None:
+        self._signal(_KILL_SIGNAL)
+
+    def _signal(self, sig: signal.Signals) -> None:
+        """Never signal a numeric process group that could now belong to another process."""
+        if self.returncode() is not None:
+            return
         try:
-            self._proc.kill()
-        except ProcessLookupError:
+            if self._pidfd is not None and hasattr(signal, "pidfd_send_signal"):
+                signal.pidfd_send_signal(self._pidfd, sig)
+                return
+            if self._identity is not None and _process_identity(self.pid) != self._identity:
+                return
+            send_signal = getattr(self._proc, "send_signal", None)
+            if callable(send_signal):
+                send_signal(sig)
+            elif sig == _KILL_SIGNAL:
+                self._proc.kill()
+            else:
+                self._proc.terminate()
+        except (ProcessLookupError, PermissionError, OSError):
             pass
 
     async def wait(self, timeout: float | None = None) -> int:
-        if timeout is None:
-            return int(await self._proc.wait())
-        return int(await asyncio.wait_for(self._proc.wait(), timeout=timeout))
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            rc = self.returncode()
+            if rc is not None:
+                return rc
+            if deadline is not None and time.monotonic() >= deadline:
+                raise asyncio.TimeoutError
+            await asyncio.sleep(0.02)
 
     async def drain_output(self) -> None:
-        """Đọc hết stdout/stderr đã buffer (không lộ ra ngoài trừ khi caller redact)."""
-        for t in self._reader_tasks:
-            if not t.done():
-                t.cancel()
-                try:
-                    await t
-                except (asyncio.CancelledError, Exception):
-                    pass
-        self._reader_tasks.clear()
+        """Discard sensitive output while reader threads keep pipes from blocking the child."""
+        self.suppress_output()
+        if self.returncode() is not None:
+            for thread in self._reader_threads:
+                await asyncio.to_thread(thread.join, 0.2)
+            self._reader_threads.clear()
+
+    def suppress_output(self) -> None:
+        with self._output_lock:
+            self._capture_output = False
+            _zero_bytearray(self._stdout_buf)
+            _zero_bytearray(self._stderr_buf)
+
+    def _close_pidfd(self) -> None:
+        if self._pidfd is None:
+            return
+        try:
+            os.close(self._pidfd)
+        except OSError:
+            pass
+        self._pidfd = None
 
 
 class ArgvCommander(Protocol):
@@ -104,7 +196,7 @@ class ArgvCommander(Protocol):
 
 
 class SubprocessArgvCommander:
-    """asyncio.create_subprocess_exec — argv list, không shell."""
+    """Loop-independent, argv-only subprocess owner; never invokes a shell."""
 
     which = staticmethod(shutil.which)
 
@@ -117,42 +209,103 @@ class SubprocessArgvCommander:
     ) -> OwnedProcess:
         if not argv:
             raise UserFacingError("VPN: argv rỗng")
-        # Fail-closed: từ chối nếu phần tử argv không phải str (tránh bytes/path object lạ).
-        clean = [str(a) for a in argv]
-        for a in clean:
+        if os.name != "posix":
+            raise UserFacingError(
+                "VPN runtime không hỗ trợ Windows native; hãy chạy yett và VPN trong WSL2"
+            )
+        clean: list[str] = []
+        for a in argv:
+            if not isinstance(a, str):
+                raise UserFacingError("VPN: mọi phần tử argv phải là chuỗi")
             if "\x00" in a:
                 raise UserFacingError("VPN: argv chứa null byte — từ chối")
-        proc = await asyncio.create_subprocess_exec(
-            *clean,
-            stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            clean.append(a)
+        proc = subprocess.Popen(  # noqa: S603 -- fixed argv, shell explicitly disabled
+            clean,
+            stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             env=dict(env) if env is not None else None,
-            start_new_session=True,  # process group riêng → disconnect gửi tín hiệu cả nhóm
+            shell=False,
+            close_fds=True,
+            start_new_session=True,
         )
-        owned = OwnedProcess(pid=int(proc.pid or 0), argv0=clean[0], _proc=proc)
-        if stdin is not None and proc.stdin is not None:
-            proc.stdin.write(stdin)
-            await proc.stdin.drain()
-            proc.stdin.close()
-        if proc.stdout is not None:
-            owned._reader_tasks.append(asyncio.create_task(_pump(proc.stdout, owned._stdout_buf)))
-        if proc.stderr is not None:
-            owned._reader_tasks.append(asyncio.create_task(_pump(proc.stderr, owned._stderr_buf)))
+        pid = int(proc.pid)
+        pidfd: int | None = None
+        if hasattr(os, "pidfd_open"):
+            try:
+                pidfd = os.pidfd_open(pid)
+            except OSError:
+                pass
+        owned = OwnedProcess(
+            pid=pid,
+            argv0=clean[0],
+            _proc=proc,
+            _identity=_process_identity(pid),
+            _pidfd=pidfd,
+        )
+        try:
+            if stdin is not None and proc.stdin is not None:
+                proc.stdin.write(stdin)
+                proc.stdin.flush()
+                proc.stdin.close()
+            for stream, buf in ((proc.stdout, owned._stdout_buf), (proc.stderr, owned._stderr_buf)):
+                if stream is None:
+                    continue
+                thread = threading.Thread(
+                    target=_pump,
+                    args=(stream, buf, owned),
+                    daemon=True,
+                    name="yett-vpn-output",
+                )
+                owned._reader_threads.append(thread)
+                thread.start()
+        except BaseException:
+            owned.kill()
+            try:
+                proc.wait(timeout=2)
+            except Exception:
+                pass
+            owned.suppress_output()
+            owned._close_pidfd()
+            raise
         return owned
 
 
-async def _pump(stream: asyncio.StreamReader, buf: bytearray) -> None:
+def _pump(stream: Any, buf: bytearray, proc: OwnedProcess) -> None:
     try:
         while True:
-            chunk = await stream.read(4096)
+            chunk = stream.read(4096)
             if not chunk:
                 return
-            # Giới hạn buffer để không giữ secret/log lớn trong RAM.
-            if len(buf) < 64_000:
-                buf.extend(chunk[: 64_000 - len(buf)])
-    except (asyncio.CancelledError, Exception):
+            with proc._output_lock:
+                if proc._capture_output and len(buf) < _MAX_CAPTURE_BYTES:
+                    buf.extend(chunk[: _MAX_CAPTURE_BYTES - len(buf)])
+    except Exception:
         return
+    finally:
+        try:
+            stream.close()
+        except Exception:
+            pass
+
+
+def _process_identity(pid: int) -> str | None:
+    """Linux process start-time token, used only when pidfd signaling is unavailable."""
+    if not sys.platform.startswith("linux") or pid <= 0:
+        return None
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+        fields = raw[raw.rfind(")") + 2 :].split()
+        return fields[19]
+    except (OSError, IndexError):
+        return None
+
+
+def _zero_bytearray(buf: bytearray) -> None:
+    for index in range(len(buf)):
+        buf[index] = 0
+    buf.clear()
 
 
 @dataclass
@@ -160,6 +313,7 @@ class _Session:
     process: OwnedProcess
     cleanup_paths: list[Path]
     kind: str
+    ready: bool = False
 
 
 class SubprocessVpnRunner:
@@ -182,19 +336,39 @@ class SubprocessVpnRunner:
         self._commander: ArgvCommander = commander or SubprocessArgvCommander()
         self._binary_paths = dict(binary_paths or {})
         self._sessions: dict[str, _Session] = {}
+        self._locks = {name: threading.Lock() for name in self._profiles}
+        self._closed = threading.Event()
 
     def _resolve_binary(self, kind: str) -> str:
-        if kind in self._binary_paths:
-            return str(self._binary_paths[kind])
         name = _BINARIES.get(kind)
         if not name:
             raise UserFacingError(f"VPN: kind '{kind}' không hỗ trợ")
-        path = self._commander.which(name)
+        path = self._binary_paths.get(kind)
+        if path is None:
+            path = self._commander.which(name)
         if not path:
             raise UserFacingError(
                 f"VPN: không tìm thấy lệnh '{name}' trong PATH — chạy 'yett doctor'"
             )
-        return str(path)
+        candidate = Path(str(path))
+        if not candidate.is_absolute() or candidate.name != name:
+            raise UserFacingError(f"VPN: đường dẫn binary '{name}' không hợp lệ")
+        if isinstance(self._commander, SubprocessArgvCommander):
+            try:
+                resolved = candidate.resolve(strict=True)
+                mode = resolved.stat().st_mode
+            except OSError:
+                raise UserFacingError(f"VPN: binary '{name}' không đọc được") from None
+            if not stat.S_ISREG(mode) or not os.access(resolved, os.X_OK):
+                raise UserFacingError(f"VPN: binary '{name}' không phải executable regular file")
+            if mode & (stat.S_IWGRP | stat.S_IWOTH):
+                raise UserFacingError(f"VPN: binary '{name}' cho phép user khác ghi — từ chối")
+            getuid = getattr(os, "getuid", None)
+            current_uid = int(getuid()) if callable(getuid) else 0
+            if resolved.stat().st_uid not in {current_uid, 0}:
+                raise UserFacingError(f"VPN: binary '{name}' không thuộc current user/root")
+            return str(resolved)
+        return str(candidate)
 
     def _require_profile(self, profile: str) -> VpnProfileCfg:
         if not profile or _PROFILE_NAME_RE.fullmatch(profile) is None:
@@ -208,68 +382,104 @@ class SubprocessVpnRunner:
 
     async def status(self, profile: str) -> bool:
         self._require_profile(profile)
-        sess = self._sessions.get(profile)
-        if sess is None:
-            return False
-        rc = sess.process.returncode()
-        if rc is not None:
-            await self._drop_session(profile, kill=False)
-            return False
-        return True
+        lock = await self._acquire(profile)
+        try:
+            sess = self._sessions.get(profile)
+            if sess is None:
+                return False
+            if sess.process.returncode() is not None:
+                await self._drop_session(profile, kill=False)
+                return False
+            return sess.ready
+        finally:
+            lock.release()
 
     async def connect(
         self, profile: str, *, creds: dict[str, str], cancel: CancelToken | None = None
     ) -> bool:
         cfg = self._require_profile(profile)
-        if await self.status(profile):
-            return True  # idempotent — đã sở hữu phiên đang chạy
-        # Duplicate connect lúc đang connect: từ chối (không spawn song song).
-        if profile in self._sessions:
-            raise UserFacingError(f"VPN: profile '{profile}' đang kết nối — không connect trùng")
-
-        binary = self._resolve_binary(cfg.kind)
-        cleanup: list[Path] = []
-        proc: OwnedProcess | None = None
+        lock = await self._acquire(profile, cancel=cancel)
         try:
-            argv, stdin, cleanup = self._build_argv(cfg, binary, creds, cleanup)
-            proc = await self._commander.start(argv, stdin=stdin, env=_scrubbed_env())
-            self._sessions[profile] = _Session(process=proc, cleanup_paths=list(cleanup), kind=cfg.kind)
-            # Cred file có thể xoá sau khi process đọc (openfortivpn/openvpn đọc lúc start).
-            # Giữ tới khi connect xong/fail để chắc process đã mở file; rồi cleanup sớm.
-            ok = await self._wait_until_up(proc, cfg, cancel=cancel)
-            if not ok:
-                await self._drop_session(profile, kill=True)
-                return False
-            # Cleanup temp sớm (process đã đọc); session vẫn giữ process handle.
             sess = self._sessions.get(profile)
             if sess is not None:
+                if sess.process.returncode() is None and sess.ready:
+                    return True
+                await self._drop_session(profile, kill=True)
+            if self._closed.is_set():
+                raise UserFacingError("VPN: runner đã đóng")
+            if isinstance(self._commander, SubprocessArgvCommander) and os.name != "posix":
+                raise UserFacingError(
+                    "VPN runtime không hỗ trợ Windows native; hãy dùng WSL2"
+                )
+
+            binary = self._resolve_binary(cfg.kind)
+            cleanup: list[Path] = []
+            proc: OwnedProcess | None = None
+            try:
+                argv, stdin, cleanup = self._build_argv(cfg, binary, creds, cleanup)
+                proc = await self._commander.start(argv, stdin=stdin, env=_scrubbed_env())
+                self._sessions[profile] = _Session(
+                    process=proc,
+                    cleanup_paths=list(cleanup),
+                    kind=cfg.kind,
+                )
+                ok = await self._wait_until_up(proc, cfg, cancel=cancel)
+                if not ok:
+                    await self._drop_session(profile, kill=True)
+                    return False
+                sess = self._sessions.get(profile)
+                if sess is None or sess.process is not proc or proc.returncode() is not None:
+                    await self._abort_partial(profile, proc, cleanup)
+                    return False
+                sess.ready = True
                 _cleanup_paths(sess.cleanup_paths)
                 sess.cleanup_paths.clear()
-            return True
-        except FileNotFoundError:
-            await self._abort_partial(profile, proc, cleanup)
-            raise UserFacingError(
-                f"VPN: không tìm thấy binary cho '{cfg.kind}' — chạy 'yett doctor'"
-            ) from None
-        except Cancelled:
-            await self._abort_partial(profile, proc, cleanup)
-            raise
-        except UserFacingError:
-            await self._abort_partial(profile, proc, cleanup)
-            raise
-        except Exception:
-            await self._abort_partial(profile, proc, cleanup)
-            # Không nhúng stdout/stderr/creds vào message (có thể chứa password).
-            raise UserFacingError(f"VPN: lỗi kết nối profile '{profile}'") from None
+                proc.suppress_output()
+                return True
+            except FileNotFoundError:
+                await self._abort_partial(profile, proc, cleanup)
+                raise UserFacingError(
+                    f"VPN: không tìm thấy binary cho '{cfg.kind}' — chạy 'yett doctor'"
+                ) from None
+            except (Cancelled, asyncio.CancelledError):
+                await self._abort_partial(profile, proc, cleanup)
+                raise
+            except UserFacingError as exc:
+                await self._abort_partial(profile, proc, cleanup)
+                raise UserFacingError(_redact_credentials(str(exc), creds)) from None
+            except BaseException as exc:
+                await self._abort_partial(profile, proc, cleanup)
+                if not isinstance(exc, Exception):
+                    raise
+                # Never include child output, argv, config, or credentials in this error.
+                raise UserFacingError(f"VPN: lỗi kết nối profile '{profile}'") from None
+        finally:
+            lock.release()
 
     async def disconnect(self, profile: str) -> bool:
         self._require_profile(profile)
-        sess = self._sessions.get(profile)
-        if sess is None:
-            raise UserFacingError(
-                f"VPN: không sở hữu phiên '{profile}' — chỉ ngắt được VPN do yett bật"
-            )
-        return await self._drop_session(profile, kill=True)
+        lock = await self._acquire(profile)
+        try:
+            sess = self._sessions.get(profile)
+            if sess is None:
+                raise UserFacingError(
+                    f"VPN: không sở hữu phiên '{profile}' — chỉ ngắt được VPN do yett bật"
+                )
+            return await self._drop_session(profile, kill=True)
+        finally:
+            lock.release()
+
+    async def _acquire(
+        self, profile: str, *, cancel: CancelToken | None = None
+    ) -> threading.Lock:
+        lock = self._locks[profile]
+        while not lock.acquire(blocking=False):
+            if cancel is not None:
+                cancel.check()
+            if self._closed.is_set():
+                raise UserFacingError("VPN: runner đã đóng")
+            await asyncio.sleep(0.02)
+        return lock
 
     async def _drop_session(self, profile: str, *, kill: bool) -> bool:
         sess = self._sessions.pop(profile, None)
@@ -277,14 +487,14 @@ class SubprocessVpnRunner:
             return False
         try:
             if kill and sess.process.returncode() is None:
-                _signal_group(sess.process, signal.SIGTERM)
+                sess.process.terminate()
                 try:
                     await sess.process.wait(timeout=_DISCONNECT_WAIT_SEC)
                 except (asyncio.TimeoutError, TimeoutError):
-                    _signal_group(sess.process, signal.SIGKILL)
+                    sess.process.kill()
                     try:
                         await sess.process.wait(timeout=2.0)
-                    except (asyncio.TimeoutError, TimeoutError, Exception):
+                    except Exception:
                         pass
             await sess.process.drain_output()
         finally:
@@ -297,12 +507,13 @@ class SubprocessVpnRunner:
         if profile in self._sessions:
             await self._drop_session(profile, kill=True)
             return
-        if proc is not None and proc.returncode() is None:
-            _signal_group(proc, signal.SIGKILL)
-            try:
-                await proc.wait(timeout=2.0)
-            except Exception:
-                pass
+        if proc is not None:
+            if proc.returncode() is None:
+                proc.kill()
+                try:
+                    await proc.wait(timeout=2.0)
+                except Exception:
+                    pass
             await proc.drain_output()
         _cleanup_paths(cleanup)
 
@@ -310,29 +521,58 @@ class SubprocessVpnRunner:
         self, proc: OwnedProcess, cfg: VpnProfileCfg, *, cancel: CancelToken | None
     ) -> bool:
         marker = _SUCCESS_MARKERS.get(cfg.kind, b"")
-        deadline = asyncio.get_event_loop().time() + float(cfg.connect_timeout_sec)
-        started = asyncio.get_event_loop().time()
+        deadline = asyncio.get_running_loop().time() + float(cfg.connect_timeout_sec)
+        marker_seen_at: float | None = None
         while True:
             if cancel is not None:
                 cancel.check()
+            if self._closed.is_set():
+                return False
             rc = proc.returncode()
             if rc is not None:
                 return False
-            blob = bytes(proc._stdout_buf) + bytes(proc._stderr_buf)
+            with proc._output_lock:
+                blob = bytes(proc._stdout_buf) + bytes(proc._stderr_buf)
             if marker and marker in blob:
-                return True
-            now = asyncio.get_event_loop().time()
-            if not marker and (now - started) >= _STABLE_WITHOUT_MARKER_SEC:
-                return True
-            # Fallback: sống quá stable window + có output hoạt động → connected.
-            if marker and (now - started) >= max(_STABLE_WITHOUT_MARKER_SEC, 5.0):
-                # Vẫn chưa thấy marker nhưng process sống — một số bản CLI im lặng.
-                # Fail-closed nhẹ: chỉ chấp nhận nếu đã qua ½ timeout và process còn sống.
-                if (now - started) >= min(float(cfg.connect_timeout_sec) * 0.5, 15.0):
+                if marker_seen_at is None:
+                    marker_seen_at = asyncio.get_running_loop().time()
+                elif asyncio.get_running_loop().time() - marker_seen_at >= _READINESS_STABLE_SEC:
                     return True
-            if now >= deadline:
+            if asyncio.get_running_loop().time() >= deadline:
                 return False
             await asyncio.sleep(0.05)
+
+    def close(self) -> None:
+        """Best-effort synchronous shutdown for App.close and hot reload."""
+        self._closed.set()
+        for profile, lock in self._locks.items():
+            if not lock.acquire(timeout=_DISCONNECT_WAIT_SEC + 2.0):
+                continue
+            try:
+                sess = self._sessions.pop(profile, None)
+                if sess is None:
+                    continue
+                sess.process.suppress_output()
+                if sess.process.returncode() is None:
+                    sess.process.terminate()
+                    deadline = time.monotonic() + _DISCONNECT_WAIT_SEC
+                    while sess.process.returncode() is None and time.monotonic() < deadline:
+                        time.sleep(0.02)
+                    if sess.process.returncode() is None:
+                        sess.process.kill()
+                        kill_deadline = time.monotonic() + 2.0
+                        while (
+                            sess.process.returncode() is None
+                            and time.monotonic() < kill_deadline
+                        ):
+                            time.sleep(0.02)
+                for thread in sess.process._reader_threads:
+                    thread.join(timeout=0.2)
+                sess.process._reader_threads.clear()
+                sess.process._close_pidfd()
+                _cleanup_paths(sess.cleanup_paths)
+            finally:
+                lock.release()
 
     def _build_argv(
         self,
@@ -357,12 +597,14 @@ class SubprocessVpnRunner:
     ) -> tuple[list[str], bytes | None, list[Path]]:
         user = creds.get("username", "")
         password = creds.get("password", "")
+        user = _safe_credential(user, "username")
+        password = _safe_credential(password, "password")
         # Config tạm chứa secret — 0600, cleanup bắt buộc. Không đưa password lên argv.
         body = (
             f"host = {cfg.host}\n"
             f"port = {int(cfg.port)}\n"
-            f"username = {_cfg_escape(user)}\n"
-            f"password = {_cfg_escape(password)}\n"
+            f"username = {user}\n"
+            f"password = {password}\n"
         )
         cred_path = _write_secret_temp(body.encode("utf-8"), suffix=".conf")
         cleanup.append(cred_path)
@@ -376,10 +618,20 @@ class SubprocessVpnRunner:
         creds: Mapping[str, str],
         cleanup: list[Path],
     ) -> tuple[list[str], bytes | None, list[Path]]:
-        ovpn = _open_config_nofollow(cfg.config_file)
-        argv = [binary, "--config", ovpn, "--verb", "1"]
-        password = creds.get("password", "")
-        user = creds.get("username", "")
+        config_data, config_dir = _read_safe_openvpn_config(cfg.config_file)
+        config_copy = _write_secret_temp(config_data, suffix=".ovpn")
+        cleanup.append(config_copy)
+        argv = [
+            binary,
+            "--cd",
+            str(config_dir),
+            "--config",
+            str(config_copy),
+            "--verb",
+            "1",
+        ]
+        password = _safe_credential(creds.get("password", ""), "password")
+        user = _safe_credential(creds.get("username", ""), "username")
         if cfg.cred_secret or password or user:
             # --auth-user-pass <file> với username\npassword; không đưa secret lên argv.
             auth = f"{user}\n{password}\n".encode("utf-8")
@@ -389,15 +641,28 @@ class SubprocessVpnRunner:
         return argv, None, cleanup
 
 
-def _cfg_escape(value: str) -> str:
-    """Escape tối thiểu cho file config openfortivpn — không dùng shell."""
-    return value.replace("\n", "").replace("\r", "")
+def _safe_credential(value: str, field_name: str) -> str:
+    if not isinstance(value, str) or any(c in value for c in ("\x00", "\r", "\n")):
+        raise UserFacingError(f"VPN: {field_name} chứa ký tự điều khiển không hợp lệ")
+    return value
+
+
+def _redact_credentials(message: str, creds: Mapping[str, str]) -> str:
+    for value in creds.values():
+        if isinstance(value, str) and value:
+            message = message.replace(value, "[REDACTED]")
+    return redact(message)
 
 
 def _scrubbed_env() -> dict[str, str]:
     """Env tối thiểu cho VPN child — không kế thừa secret từ process cha nếu có thể."""
-    keep = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "HOME", "USER", "LOGNAME")
-    out: dict[str, str] = {}
+    keep = ("LANG", "LC_ALL", "LC_CTYPE", "TZ")
+    out = {
+        "PATH": (
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:"
+            "/opt/homebrew/sbin:/opt/homebrew/bin"
+        )
+    }
     for k in keep:
         if k in os.environ:
             out[k] = os.environ[k]
@@ -407,39 +672,67 @@ def _scrubbed_env() -> dict[str, str]:
 def _write_secret_temp(data: bytes, *, suffix: str) -> Path:
     """Tạo file tạm owner-only (0600), O_EXCL|O_NOFOLLOW, trong dir 0700."""
     tmpdir = tempfile.mkdtemp(prefix="yett-vpn-")
+    path = Path(tmpdir) / f"cred{suffix}"
     try:
         os.chmod(tmpdir, 0o700)
-    except OSError:
-        pass
-    name = f"cred{suffix}"
-    path = Path(tmpdir) / name
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    fd = os.open(str(path), flags, 0o600)
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise OSError("cred temp không phải regular file")
-        os.write(fd, data)
+        if stat.S_IMODE(os.stat(tmpdir).st_mode) != 0o700:
+            raise OSError("temp directory permissions")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(str(path), flags, 0o600)
         try:
-            os.fchmod(fd, 0o600)
-        except OSError:
-            pass
-    finally:
-        os.close(fd)
-    # Chống swap symlink giữa open và dùng.
-    st = os.lstat(path)
-    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError("cred temp không phải regular file")
+            fchmod = getattr(os, "fchmod", None)
+            if not callable(fchmod):
+                raise OSError("owner-only temp files require POSIX")
+            fchmod(fd, 0o600)
+            view = memoryview(data)
+            while view:
+                written = os.write(fd, view)
+                if written <= 0:
+                    raise OSError("short write")
+                view = view[written:]
+        finally:
+            os.close(fd)
+        st = os.lstat(path)
+        if (
+            stat.S_ISLNK(st.st_mode)
+            or not stat.S_ISREG(st.st_mode)
+            or stat.S_IMODE(st.st_mode) != 0o600
+        ):
+            raise OSError("unsafe temp file")
+        return path
+    except BaseException:
         _cleanup_paths([path, Path(tmpdir)])
-        raise UserFacingError("VPN: từ chối cred temp không an toàn (symlink/non-file)")
-    return path
+        raise
 
 
 def _open_config_nofollow(config_file: str) -> str:
-    """Xác nhận .ovpn là regular file, không symlink — trả path đã kiểm."""
+    """Validate an OpenVPN profile path and contents without following symlinks."""
+    _read_safe_openvpn_config(config_file)
+    return config_file
+
+
+def _read_safe_openvpn_config(config_file: str) -> tuple[bytes, Path]:
     p = Path(config_file)
-    if not p.is_absolute() or ".." in p.parts:
+    if not p.is_absolute() or ".." in p.parts or p.suffix.lower() != ".ovpn":
         raise UserFacingError("VPN: config_file không hợp lệ")
+    try:
+        resolved = p.resolve(strict=True)
+    except OSError:
+        raise UserFacingError("VPN: không tìm thấy config_file") from None
+    if resolved != p:
+        raise UserFacingError("VPN: từ chối config_file hoặc thư mục cha là symlink")
+    expected = resolved.stat()
+    parent_stat = resolved.parent.stat()
+    getuid = getattr(os, "getuid", None)
+    current_uid = int(getuid()) if callable(getuid) else 0
+    if expected.st_uid not in {current_uid, 0}:
+        raise UserFacingError("VPN: config_file không thuộc current user/root")
+    if parent_stat.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise UserFacingError("VPN: thư mục chứa config_file cho phép user khác ghi")
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -454,13 +747,49 @@ def _open_config_nofollow(config_file: str) -> str:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
             raise UserFacingError("VPN: config_file phải là regular file")
+        if (st.st_dev, st.st_ino) != (expected.st_dev, expected.st_ino):
+            raise UserFacingError("VPN: config_file thay đổi trong lúc kiểm tra — từ chối")
+        if st.st_size > _MAX_CONFIG_BYTES:
+            raise UserFacingError("VPN: config_file vượt giới hạn 1 MiB")
+        if st.st_mode & stat.S_IWOTH:
+            raise UserFacingError("VPN: config_file cho phép user khác ghi — từ chối")
+        chunks: list[bytes] = []
+        remaining = _MAX_CONFIG_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(fd, min(65_536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        if len(data) > _MAX_CONFIG_BYTES:
+            raise UserFacingError("VPN: config_file vượt giới hạn 1 MiB")
     finally:
         os.close(fd)
-    # lstat thêm lần nữa — phát hiện nếu path là symlink (khi O_NOFOLLOW không có).
-    lst = os.lstat(p)
-    if stat.S_ISLNK(lst.st_mode):
-        raise UserFacingError("VPN: từ chối config_file là symlink")
-    return str(p)
+    _validate_openvpn_directives(data)
+    return data, p.parent
+
+
+def _validate_openvpn_directives(data: bytes) -> None:
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise UserFacingError("VPN: config_file phải là UTF-8 hợp lệ") from None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith(("#", ";", "<")):
+            continue
+        try:
+            tokens = shlex.split(line, comments=True, posix=True)
+        except ValueError:
+            raise UserFacingError("VPN: config_file có cú pháp quote/escape không hợp lệ") from None
+        if not tokens:
+            continue
+        directive = tokens[0].lstrip("-").split("=", 1)[0].lower()
+        if directive in _UNSAFE_OPENVPN_DIRECTIVES or directive.startswith("management-"):
+            raise UserFacingError(
+                f"VPN: config_file chứa directive bị cấm '{directive}'"
+            )
 
 
 def _cleanup_paths(paths: list[Path]) -> None:
@@ -497,24 +826,6 @@ def _cleanup_paths(paths: list[Path]) -> None:
                 pass
 
 
-def _signal_group(proc: OwnedProcess, sig: signal.Signals) -> None:
-    """Gửi tín hiệu tới process group (start_new_session) — ownership của yett."""
-    pid = proc.pid
-    if pid <= 0:
-        if sig == signal.SIGKILL:
-            proc.kill()
-        else:
-            proc.terminate()
-        return
-    try:
-        os.killpg(pid, sig)
-    except (ProcessLookupError, PermissionError, OSError):
-        if sig == signal.SIGKILL:
-            proc.kill()
-        else:
-            proc.terminate()
-
-
 def _safe_secret_name_error(name: str) -> UserFacingError:
     # Chỉ lộ TÊN secret, không lộ giá trị.
     return UserFacingError(f"VPN: thiếu secret '{name}' trong secret store (fail-closed)")
@@ -541,7 +852,8 @@ class VpnManager:
             raise UserFacingError(
                 f"VPN: profile '{profile}' không nằm trong allowlist config (fail-closed)"
             )
-        if profile in self._connected or await self._runner.status(profile):
+        # Never trust the cache: a child may have exited since the previous successful check.
+        if await self._runner.status(profile):
             self._connected.add(profile)
             return
         creds = self._creds(profile)
@@ -574,22 +886,30 @@ class VpnManager:
             self._connected.discard(profile)
         return connected
 
+    def close(self) -> None:
+        self._connected.clear()
+        self._runner.close()
+
     def _creds(self, profile: str) -> dict[str, str]:
         cfg = self._profiles[profile]
         out: dict[str, str] = {}
-        if cfg.username:
-            out["username"] = cfg.username
-        elif cfg.username_secret:
-            try:
+        secret_name = ""
+        try:
+            if cfg.username:
+                out["username"] = cfg.username
+            elif cfg.username_secret:
+                secret_name = cfg.username_secret
                 out["username"] = str(self._secrets.get(cfg.username_secret))
-            except SecretNotFound as e:
-                raise _safe_secret_name_error(cfg.username_secret) from e
-        if cfg.cred_secret:
-            try:
+            if cfg.cred_secret:
+                secret_name = cfg.cred_secret
                 out["password"] = str(self._secrets.get(cfg.cred_secret))
-            except SecretNotFound as e:
-                raise _safe_secret_name_error(cfg.cred_secret) from e
-        return out
+            return out
+        except SecretNotFound as exc:
+            out.clear()
+            raise _safe_secret_name_error(secret_name) from exc
+        except BaseException:
+            out.clear()
+            raise
 
 
 class VpnTool:

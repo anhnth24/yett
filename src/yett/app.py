@@ -548,6 +548,8 @@ class App:
         self._notifier = notifier
 
     def close(self) -> None:
+        if self.vpn_manager is not None:
+            self.vpn_manager.close()
         self.spanstore.close()
         self.checkpoints.close()
         self.cron.close()

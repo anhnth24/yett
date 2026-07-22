@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import signal
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING
@@ -489,11 +490,22 @@ def serve_forever(
             target=_watch_config, args=(httpd, lock, center, rebuild, config_path, stop),
             daemon=True,
         ).start()
+    previous_sigterm = None
+    if threading.current_thread() is threading.main_thread():
+        previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+        def _stop_on_sigterm(_signum, _frame) -> None:
+            raise KeyboardInterrupt
+
+        signal.signal(signal.SIGTERM, _stop_on_sigterm)
     try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        print("\n[yett] đã dừng.")
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print("\n[yett] đã dừng.")
     finally:
+        if previous_sigterm is not None:
+            signal.signal(signal.SIGTERM, previous_sigterm)
         stop.set()
         httpd.shutdown()
         getattr(httpd, "_app", app).close()  # đóng App hiện tại (có thể đã hot-reload swap)

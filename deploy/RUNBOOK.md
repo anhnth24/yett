@@ -36,7 +36,9 @@ yett usage --by provider --state state
 - **Hiệu năng file:** project nằm trên `/mnt/c` hoặc `/mnt/d` (NTFS) sẽ chậm với git/exec.
   Nếu chậm, cân nhắc clone project hay dùng vào ext4 của WSL (`~/work/...`) và trỏ `projects.path` vào đó.
 - **VPN:** khai `remote.vpn_profiles` (`openfortivpn`/`openvpn`), đặt secret, rồi
-  `yett vpn connect <profile>` hoặc để SSH tự pre-connect khi `host.vpn_required` khớp.
+  chạy `yett vpn connect <profile>` ở foreground (giữ terminal mở; `Ctrl+C` ngắt process
+  được sở hữu) hoặc để SSH tự pre-connect khi `host.vpn_required` khớp. Không dùng một lần
+  CLI khác để nhận nuôi/status/kill PID tunnel. Runtime VPN chỉ hỗ trợ POSIX/WSL2.
   Nếu FortiClient chạy trên Windows host, kiểm tra traffic SSH từ WSL2 có đi qua tunnel
   không; nếu không, dùng `openfortivpn` trong WSL2.
 - **Docker:** bật "WSL integration" trong Docker Desktop Settings cho distro đang dùng.

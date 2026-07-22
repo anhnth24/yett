@@ -8,17 +8,18 @@ injection/traversal/symlink, duplicate connect, redaction.
 from __future__ import annotations
 
 import asyncio
+import io
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
 
-from yett.config.models import VpnProfileCfg
+from yett.config.models import SecurityCfg, VpnProfileCfg
 from yett.core.cancel import CancelToken, Cancelled
 from yett.errors import UserFacingError
 from yett.secrets.backends import InMemorySecretStore
-from yett.config.models import SecurityCfg
 from yett.security.basic_gate import BasicGate
 from yett.tools.remote.vpn import (
     OwnedProcess,
@@ -29,6 +30,7 @@ from yett.tools.remote.vpn import (
     _open_config_nofollow,
     _write_secret_temp,
 )
+from yett.tools.remote import vpn as vpn_module
 
 
 class _Ctx:
@@ -213,7 +215,10 @@ async def test_openvpn_auth_file_not_on_argv_as_secret(tmp_path: Path) -> None:
     assert ok
     argv = cmd.calls[0]
     assert argv[0].endswith("openvpn")
-    assert "--config" in argv and str(ovpn) in argv
+    assert "--config" in argv and str(ovpn) not in argv
+    assert argv[argv.index("--cd") + 1] == str(tmp_path)
+    config_copy = argv[argv.index("--config") + 1]
+    assert not Path(config_copy).exists()
     assert "--auth-user-pass" in argv
     joined = " ".join(argv)
     assert "SUPERSECRET" not in joined
@@ -260,7 +265,11 @@ async def test_gate_rejects_unknown_profile_and_extra_args() -> None:
     )
     assert d2.verdict == "deny" and d2.rule_id == "VPN_EXTRA_ARGS"
     d3 = gate.evaluate("vpn", {"action": "connect", "profile": "office"}, ctx)
-    assert d3.verdict == "allow"
+    assert d3.verdict == "need_approval"
+    d4 = gate.evaluate("vpn", {"action": "status", "profile": "office"}, ctx)
+    assert d4.verdict == "allow"
+    d5 = gate.evaluate("vpn", {"action": "disconnect", "profile": "office"}, ctx)
+    assert d5.verdict == "need_approval"
 
 
 async def test_duplicate_connect_idempotent() -> None:
@@ -491,3 +500,294 @@ def test_doctor_vpn_config_problems(tmp_path: Path) -> None:
     # Nếu binary thiếu → problem; nếu có trên máy CI thì có thể rỗng — chỉ kiểm hàm không crash
     problems = _vpn_config_problems(cfg)
     assert isinstance(problems, list)
+
+
+async def test_concurrent_connect_is_serialized_and_spawns_once() -> None:
+    class BlockingCommander(_FakeCommander):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+            self.start_count = 0
+
+        async def start(self, argv, *, stdin=None, env=None):
+            self.start_count += 1
+            self.entered.set()
+            await self.release.wait()
+            return await super().start(argv, stdin=stdin, env=env)
+
+    cmd = BlockingCommander()
+    runner = SubprocessVpnRunner({"office": _forti()}, commander=cmd)
+    first = asyncio.create_task(
+        runner.connect("office", creds={"username": "a", "password": "p"})
+    )
+    await cmd.entered.wait()
+    second = asyncio.create_task(
+        runner.connect("office", creds={"username": "a", "password": "p"})
+    )
+    await asyncio.sleep(0.05)
+    assert cmd.start_count == 1
+    cmd.release.set()
+    assert await asyncio.gather(first, second) == [True, True]
+    assert cmd.start_count == 1
+    runner.close()
+
+
+async def test_status_waits_for_connect_and_never_reports_connecting_as_up() -> None:
+    class BlockingCommander(_FakeCommander):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def start(self, argv, *, stdin=None, env=None):
+            self.entered.set()
+            await self.release.wait()
+            return await super().start(argv, stdin=stdin, env=env)
+
+    cmd = BlockingCommander()
+    runner = SubprocessVpnRunner({"office": _forti()}, commander=cmd)
+    connecting = asyncio.create_task(
+        runner.connect("office", creds={"username": "a", "password": "p"})
+    )
+    await cmd.entered.wait()
+    status = asyncio.create_task(runner.status("office"))
+    await asyncio.sleep(0.05)
+    assert not status.done()
+    cmd.release.set()
+    assert await connecting is True
+    assert await status is True
+    runner.close()
+
+
+async def test_process_liveness_without_readiness_marker_fails_closed() -> None:
+    cmd = _FakeCommander(mode="hang")
+    runner = SubprocessVpnRunner(
+        {"office": _forti(connect_timeout_sec=1)},
+        commander=cmd,
+    )
+    assert await runner.connect("office", creds={"username": "a", "password": "p"}) is False
+    assert cmd.started[0].returncode() == -15
+    assert not runner._sessions
+
+
+async def test_asyncio_task_cancellation_kills_and_cleans_all_temp_files(
+    tmp_path: Path,
+) -> None:
+    ovpn = tmp_path / "client.ovpn"
+    ovpn.write_text("client\n", encoding="utf-8")
+    cmd = _FakeCommander(mode="hang")
+    runner = SubprocessVpnRunner(
+        {"home": _ovpn(str(ovpn), connect_timeout_sec=30)},
+        commander=cmd,
+    )
+    task = asyncio.create_task(
+        runner.connect("home", creds={"username": "a", "password": "S; e\ncret".replace("\n", "")})
+    )
+    while not cmd.calls:
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not runner._sessions
+    assert cmd.started[0].returncode() is not None
+    for option in ("--config", "--auth-user-pass"):
+        path = Path(cmd.calls[0][cmd.calls[0].index(option) + 1])
+        assert not path.exists()
+
+
+async def test_manager_rechecks_dead_child_instead_of_trusting_connected_cache() -> None:
+    cmd = _FakeCommander()
+    profiles = {"office": _forti()}
+    runner = SubprocessVpnRunner(profiles, commander=cmd)
+    manager = VpnManager(runner, InMemorySecretStore({"vpn_pw": "pw"}), profiles)
+    await manager.ensure("office")
+    cmd.started[0]._proc.returncode = 1
+    await manager.ensure("office")
+    assert len(cmd.calls) == 2
+    manager.close()
+
+
+@pytest.mark.parametrize(
+    "directive",
+    [
+        "up /tmp/evil",
+        "--plugin=/tmp/evil.so",
+        "config nested.ovpn",
+        "management-client-user nobody",
+        "script-security 2",
+        "iproute /tmp/evil",
+    ],
+)
+def test_openvpn_config_rejects_code_execution_and_recursive_directives(
+    tmp_path: Path, directive: str
+) -> None:
+    ovpn = tmp_path / "unsafe.ovpn"
+    ovpn.write_text(f"client\n{directive}\n", encoding="utf-8")
+    with pytest.raises(UserFacingError, match="directive bị cấm"):
+        _open_config_nofollow(str(ovpn))
+
+
+def test_openvpn_config_rejects_world_writable_and_oversize(tmp_path: Path) -> None:
+    writable = tmp_path / "writable.ovpn"
+    writable.write_text("client\n", encoding="utf-8")
+    writable.chmod(0o666)
+    with pytest.raises(UserFacingError, match="user khác ghi"):
+        _open_config_nofollow(str(writable))
+
+    huge = tmp_path / "huge.ovpn"
+    huge.write_bytes(b"#" * (1_048_576 + 1))
+    with pytest.raises(UserFacingError, match="1 MiB"):
+        _open_config_nofollow(str(huge))
+
+
+def test_secret_temp_partial_write_failure_removes_file_and_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    temp_dir = tmp_path / "yett-vpn-forced"
+    temp_dir.mkdir()
+    monkeypatch.setattr(vpn_module.tempfile, "mkdtemp", lambda **kwargs: str(temp_dir))
+    monkeypatch.setattr(vpn_module.os, "write", lambda fd, data: (_ for _ in ()).throw(OSError()))
+    with pytest.raises(OSError):
+        _write_secret_temp(b"secret", suffix=".auth")
+    assert not temp_dir.exists()
+
+
+def test_output_pump_caps_then_zeroes_sensitive_capture() -> None:
+    fake = _FakeProc()
+    owned = OwnedProcess(pid=fake.pid, argv0="openvpn", _proc=fake)
+    vpn_module._pump(io.BytesIO(b"secret=" + b"x" * 100_000), owned._stdout_buf, owned)
+    assert len(owned._stdout_buf) == 64_000
+    owned.suppress_output()
+    assert owned._stdout_buf == bytearray()
+
+
+def test_subprocess_output_drains_across_distinct_event_loops_without_deadlock() -> None:
+    commander = vpn_module.SubprocessArgvCommander()
+    script = "import sys; sys.stdout.buffer.write(b'x'*100000); sys.stdout.flush()"
+    owned = asyncio.run(commander.start([sys.executable, "-c", script]))
+    assert asyncio.run(owned.wait(timeout=5)) == 0
+    asyncio.run(owned.drain_output())
+    assert len(owned._stdout_buf) == 0
+
+
+def test_pid_identity_mismatch_prevents_signal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeProc()
+    owned = OwnedProcess(pid=fake.pid, argv0="openvpn", _proc=fake, _identity="original")
+    monkeypatch.setattr(vpn_module, "_process_identity", lambda pid: "reused")
+    owned.terminate()
+    assert fake.returncode is None
+
+
+async def test_invalid_binary_path_is_rejected_before_spawn() -> None:
+    cmd = _FakeCommander()
+    runner = SubprocessVpnRunner(
+        {"office": _forti()},
+        commander=cmd,
+        binary_paths={"openfortivpn": "/tmp/not-the-approved-name"},
+    )
+    with pytest.raises(UserFacingError, match="binary"):
+        await runner.connect("office", creds={"username": "a", "password": "p"})
+    assert not cmd.calls
+
+
+async def test_windows_native_commander_fails_before_spawn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(vpn_module.os, "name", "nt")
+    with pytest.raises(UserFacingError, match="Windows native"):
+        await vpn_module.SubprocessArgvCommander().start(["/usr/sbin/openvpn"])
+
+
+@pytest.mark.parametrize("password", ["p@ss word", "semi;colon", "quote'\"value", "token=abc"])
+async def test_secret_variants_never_appear_in_failure_result(password: str) -> None:
+    profiles = {"office": _forti()}
+    manager = VpnManager(
+        SubprocessVpnRunner(profiles, commander=_FakeCommander(mode="fail_exit")),
+        InMemorySecretStore({"vpn_pw": password}),
+        profiles,
+    )
+    result = await VpnTool(manager).run(
+        {"action": "connect", "profile": "office"},
+        _Ctx(),
+    )
+    assert result.is_error
+    assert password not in result.content
+
+
+async def test_dynamic_secret_is_scrubbed_from_injected_commander_error() -> None:
+    class LeakyCommander(_FakeCommander):
+        async def start(self, argv, *, stdin=None, env=None):
+            raise UserFacingError("backend accidentally echoed p@ss word")
+
+    runner = SubprocessVpnRunner({"office": _forti()}, commander=LeakyCommander())
+    with pytest.raises(UserFacingError) as exc:
+        await runner.connect(
+            "office",
+            creds={"username": "a", "password": "p@ss word"},
+        )
+    assert "p@ss word" not in str(exc.value)
+    assert "[REDACTED]" in str(exc.value)
+
+
+async def test_start_failure_removes_every_created_temp_file(tmp_path: Path) -> None:
+    ovpn = tmp_path / "client.ovpn"
+    ovpn.write_text("client\n", encoding="utf-8")
+    cmd = _FakeCommander(mode="missing_bin")
+    runner = SubprocessVpnRunner({"home": _ovpn(str(ovpn))}, commander=cmd)
+    with pytest.raises(UserFacingError):
+        await runner.connect("home", creds={"username": "a", "password": "p"})
+    argv = cmd.calls[0]
+    for option in ("--config", "--auth-user-pass"):
+        assert not Path(argv[argv.index(option) + 1]).exists()
+
+
+async def test_close_terminates_only_owned_ready_process() -> None:
+    cmd = _FakeCommander()
+    runner = SubprocessVpnRunner({"office": _forti()}, commander=cmd)
+    assert await runner.connect("office", creds={"username": "a", "password": "p"})
+    runner.close()
+    assert cmd.started[0].returncode() == -15
+    assert not runner._sessions
+
+
+async def test_ssh_preconnect_propagates_cancel_token() -> None:
+    from yett.tools.remote.hostprofile import HostProfile, HostRegistry
+    from yett.tools.remote.ssh_exec import SshExecTool
+
+    class CaptureVpn:
+        seen: CancelToken | None = None
+
+        async def ensure(self, profile, *, cancel=None):
+            self.seen = cancel
+
+    class Ssh:
+        async def run(self, host, cmd, *, key):
+            return (0, "ok", "")
+
+    class Ctx:
+        cancel = CancelToken()
+
+    vpn = CaptureVpn()
+    hosts = HostRegistry(
+        {
+            "uat": HostProfile(
+                address="10.0.0.1",
+                auth="keyfile:k",
+                vpn_required="office",
+            )
+        }
+    )
+    tool = SshExecTool(hosts, Ssh(), InMemorySecretStore({"k": "KEY"}), vpn=vpn)
+    result = await tool.run({"host": "uat", "cmd": "true"}, Ctx())
+    assert result.ok
+    assert vpn.seen is Ctx.cancel
+
+
+def test_openvpn_config_requires_ovpn_suffix(tmp_path: Path) -> None:
+    config = tmp_path / "client.conf"
+    config.write_text("client\n", encoding="utf-8")
+    with pytest.raises(Exception):
+        VpnProfileCfg(kind="openvpn", config_file=str(config))

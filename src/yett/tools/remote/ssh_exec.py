@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from yett.core.cancel import CancelToken
 from yett.errors import UserFacingError
 from yett.tools.base import ToolCtx, ToolResult
 from yett.tools.remote.hostprofile import HostProfile, HostRegistry
@@ -41,7 +42,12 @@ class SshExecTool:
 
     async def run(self, args: dict, ctx: ToolCtx) -> ToolResult:
         host = self._hosts.resolve(args["host"])  # host lạ → UserFacingError
-        await _ensure_vpn(self._vpn, host.vpn_required)
+        cancel = getattr(ctx, "cancel", None)
+        await _ensure_vpn(
+            self._vpn,
+            host.vpn_required,
+            cancel=cancel if isinstance(cancel, CancelToken) else None,
+        )
         key = self._resolve_key(host)
         code, out, err = await self._backend.run(host, args["cmd"], key=key)
         body = f"exit={code}\n{out}"
@@ -84,14 +90,21 @@ class LogReadTool:
             return ToolResult.error(
                 f"[DENIED] '{path}' không nằm trong log_paths khai báo của host"
             )
-        await _ensure_vpn(self._vpn, host.vpn_required)
+        cancel = getattr(ctx, "cancel", None)
+        await _ensure_vpn(
+            self._vpn,
+            host.vpn_required,
+            cancel=cancel if isinstance(cancel, CancelToken) else None,
+        )
         key = self._secrets.get(host.auth.split(":", 1)[1]) if host.auth.startswith("keyfile:") else ""
         lines = int(args.get("lines", 200))
         code, out, err = await self._backend.run(host, f"tail -n {lines} {_q(path)}", key=key)
         return ToolResult(ok=code == 0, content=out or err, is_error=code != 0)
 
 
-async def _ensure_vpn(vpn, vpn_required: str | None) -> None:
+async def _ensure_vpn(
+    vpn, vpn_required: str | None, *, cancel: CancelToken | None = None
+) -> None:
     """Fail-closed: host khai vpn_required mà không có VpnManager → từ chối (không SSH trần)."""
     if not vpn_required:
         return
@@ -100,7 +113,7 @@ async def _ensure_vpn(vpn, vpn_required: str | None) -> None:
             f"host yêu cầu VPN '{vpn_required}' nhưng VPN chưa được cấu hình/wire "
             "(thêm remote.vpn_profiles + cài openfortivpn/openvpn)"
         )
-    await vpn.ensure(vpn_required)
+    await vpn.ensure(vpn_required, cancel=cancel)
 
 
 def _path_allowed(path: str, allow: list[str]) -> bool:

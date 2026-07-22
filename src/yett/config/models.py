@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 _VPN_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _VPN_HOST_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,252}[A-Za-z0-9])?$")
+_VPN_SECRET_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 
 class ProviderCfg(BaseModel):
@@ -147,6 +148,23 @@ class VpnProfileCfg(BaseModel):
         # Chặn traversal lexical trước khi runner mở file (O_NOFOLLOW).
         if ".." in p.parts:
             raise ValueError("vpn config_file không được chứa '..'")
+        if p.suffix.lower() != ".ovpn":
+            raise ValueError("vpn config_file phải có đuôi .ovpn")
+        return v
+
+    @field_validator("cred_secret", "username_secret")
+    @classmethod
+    def _secret_name_safe(cls, v: str) -> str:
+        v = (v or "").strip()
+        if v and _VPN_SECRET_NAME_RE.fullmatch(v) is None:
+            raise ValueError("tên VPN secret không hợp lệ")
+        return v
+
+    @field_validator("username")
+    @classmethod
+    def _username_safe(cls, v: str) -> str:
+        if any(c in v for c in ("\x00", "\r", "\n")):
+            raise ValueError("vpn username chứa ký tự điều khiển")
         return v
 
     @model_validator(mode="after")

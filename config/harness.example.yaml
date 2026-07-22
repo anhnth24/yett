@@ -113,7 +113,8 @@ subagents_enabled: true
 # ---- Server SSH + VPN (deploy UAT, đọc log). Host lạ → deny; xóa file → cấm tuyệt đối ----
 # VPN: model chỉ chọn TÊN profile (allowlist). Credentials = TÊN secret, giá trị không vào
 # context/span/log. CLI argv cố định (không shell, không flag tùy ý từ model).
-# Operator pre-connect: `yett vpn connect|disconnect|status <profile>`
+# Operator pre-connect: `yett vpn connect <profile>` chạy foreground; giữ terminal mở,
+# Ctrl+C để ngắt process được lệnh đó sở hữu. Windows native không hỗ trợ; dùng WSL2.
 # remote:
 #   vpn_profiles:
 #     office:                         # openfortivpn (Fortinet SSL) — khuyến nghị trên WSL2
@@ -124,7 +125,8 @@ subagents_enabled: true
 #       cred_secret: vpn_office_pw    # export YETT_SECRET_VPN_OFFICE_PW=... hoặc secrets/vpn_office_pw
 #     # home:                         # OpenVPN — config_file tuyệt đối, không symlink
 #     #   kind: openvpn
-#     #   config_file: /etc/openvpn/client.ovpn
+#     #   config_file: /etc/openvpn/client.ovpn  # UTF-8, <=1 MiB, owner/root, dir không writable
+#     #                                           # cấm script/plugin/management/config recursion
 #     #   username: you
 #     #   cred_secret: vpn_home_pw
 #   hosts:
@@ -137,7 +139,8 @@ subagents_enabled: true
 #       log_paths: [/var/log/app/*.log]
 #       deploy_script: /opt/deploy/run.sh   # lệnh deploy DUY NHẤT được phép (phải duyệt)
 # Cần cài: pip install asyncssh; openfortivpn và/hoặc openvpn (xem `yett doctor`)
-# Gate: ssh_exec/log_read/vpn được allow theo host/profile đã khai — không cần rule allowlist riêng.
+# Gate: SSH pre-connect tự ensure; model gọi VPN connect/disconnect trực tiếp cần operator approval,
+# status được allow theo profile. Model không thể truyền flag/config path tùy ý.
 
 # ---- Sandbox ----
 sandbox:
