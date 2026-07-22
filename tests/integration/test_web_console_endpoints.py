@@ -15,6 +15,7 @@ from pathlib import Path
 from yett.app import App
 from yett.config.models import (
     BudgetCfg,
+    ChannelsCfg,
     DbProfileCfg,
     HarnessCfg,
     HostCfg,
@@ -23,6 +24,8 @@ from yett.config.models import (
     RemoteCfg,
     SandboxCfg,
     SearchCfg,
+    TelegramCfg,
+    ZaloCfg,
 )
 from yett.provider.fake import FakeProvider, text_result
 from yett.secrets.backends import InMemorySecretStore
@@ -50,9 +53,22 @@ def _app(tmp_path: Path) -> App:
         databases={"uat": DbProfileCfg(driver="postgres", dsn_secret="uat_dsn")},
         remote=RemoteCfg(hosts={"uat-01": HostCfg(address="10.0.0.5", auth="keyfile:ssh_uat01")}),
         search=SearchCfg(api_key_secret="search_key"),
+        channels=ChannelsCfg(
+            telegram=TelegramCfg(enabled=True, token_secret="telegram_token"),
+            zalo=ZaloCfg(
+                enabled=True,
+                token_secret="zalo_token",
+                pairing_code_secret="zalo_pairing",
+                mode="webhook",
+                webhook_url="https://example.test/api/channels/zalo/webhook",
+                webhook_secret_secret="zalo_webhook",
+            ),
+        ),
     )
     secrets = InMemorySecretStore()
-    secrets.set("search_key", "SUPER_SECRET_VALUE_ZZZ")  # đã đặt; uat_dsn + ssh_uat01 CỐ Ý thiếu
+    secrets.set("search_key", "SUPER_SECRET_VALUE_ZZZ")
+    secrets.set("telegram_token", "TG_SECRET_VALUE")
+    secrets.set("zalo_token", "ZALO_SECRET_VALUE")
     return App(provider=FakeProvider([text_result("ok")]), cfg=cfg,
                state_dir=tmp_path / "st", secrets=secrets, clock=_clock())
 
@@ -89,7 +105,11 @@ def test_console_endpoints(tmp_path: Path) -> None:
         by = {x["name"]: x["isset"] for x in s["secrets"]}
         assert by.get("search_key") is True
         assert by.get("uat_dsn") is False and by.get("ssh_uat01") is False
-        assert "SUPER_SECRET_VALUE_ZZZ" not in json.dumps(s)  # value KHÔNG lọt ra
+        assert by.get("telegram_token") is True and by.get("zalo_token") is True
+        assert by.get("zalo_pairing") is False and by.get("zalo_webhook") is False
+        serialized = json.dumps(s)
+        assert "SUPER_SECRET_VALUE_ZZZ" not in serialized  # value KHÔNG lọt ra
+        assert "TG_SECRET_VALUE" not in serialized and "ZALO_SECRET_VALUE" not in serialized
 
         # subagents: đọc từ ws/agents/*.md
         _, sa = _get(base + "/api/subagents")

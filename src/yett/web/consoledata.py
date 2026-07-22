@@ -63,6 +63,15 @@ def secrets_status(app: "App") -> list[dict[str, Any]]:
         add(cfg.search.api_key_secret, "web_search")
     if cfg.image:
         add(cfg.image.api_key_secret, "image_gen")
+    telegram = cfg.channels.telegram
+    if telegram.enabled:
+        add(telegram.token_secret, "Telegram · bot token")
+    zalo = cfg.channels.zalo
+    if zalo.enabled:
+        add(zalo.token_secret, "Zalo · bot token")
+        add(zalo.pairing_code_secret, "Zalo · pairing")
+        if zalo.mode == "webhook":
+            add(zalo.webhook_secret_secret, "Zalo · webhook")
     for hn, h in cfg.remote.hosts.items():
         if h.auth.startswith("keyfile:"):
             add(h.auth.split(":", 1)[1], f"ssh_exec · {hn}")
