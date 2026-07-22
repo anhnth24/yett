@@ -228,6 +228,7 @@ def test_zalo_unauthorized_does_not_reach_app(tmp_path: Path) -> None:
             "event_name": "message.text.received",
             "message": {
                 "message_id": "m-u",
+                    "from": {"id": "stranger", "is_bot": False},
                 "chat": {"id": "stranger", "chat_type": "PRIVATE"},
                 "text": "deploy giúp",
             },

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -144,12 +145,14 @@ class ZaloCfg(BaseModel):
     enabled: bool = False
     token_secret: str = "zalo_bot_token"  # TÊN secret, giá trị ở secret store/env
     allowed_chat_ids: list[str] = Field(default_factory=list)
-    pairing_code: str = ""
-    briefing_hour: int | None = None
-    poll_timeout_sec: int = Field(default=30, ge=0, le=120)
+    pairing_code: str = ""  # legacy inline value; prefer pairing_code_secret
+    pairing_code_secret: str = ""
+    briefing_hour: int | None = Field(default=None, ge=0, le=23)
+    poll_timeout_sec: int = Field(default=30, ge=1, le=120)
     mode: Literal["poll", "webhook"] = "poll"
     webhook_url: str = ""
-    webhook_secret: str = ""  # gửi trong header X-Bot-Api-Secret-Token; KHÔNG phải bot token
+    webhook_secret: str = ""  # legacy inline value; prefer webhook_secret_secret
+    webhook_secret_secret: str = ""
     webhook_path: str = "/api/channels/zalo/webhook"
     http_timeout_sec: float = Field(default=60.0, gt=0, le=300)
     max_retries: int = Field(default=2, ge=0, le=8)
@@ -158,15 +161,63 @@ class ZaloCfg(BaseModel):
     def _fail_closed_webhook(self) -> "ZaloCfg":
         if not self.enabled:
             return self
+        if not self.token_secret.strip():
+            raise ValueError("channels.zalo: token_secret không được rỗng khi enabled")
+        normalized_ids: list[str] = []
+        for chat_id in self.allowed_chat_ids:
+            normalized = chat_id.strip()
+            if (
+                not normalized
+                or len(normalized) > 256
+                or any(ord(char) < 0x20 or ord(char) == 0x7F for char in normalized)
+            ):
+                raise ValueError("channels.zalo: allowed_chat_ids chứa ID không hợp lệ")
+            normalized_ids.append(normalized)
+        self.allowed_chat_ids = list(dict.fromkeys(normalized_ids))
+        if self.pairing_code:
+            if self.pairing_code != self.pairing_code.strip():
+                raise ValueError("channels.zalo: pairing_code không được có whitespace ở hai đầu")
+            if (
+                not 8 <= len(self.pairing_code) <= 256
+                or any(ord(char) < 0x20 or ord(char) == 0x7F for char in self.pairing_code)
+            ):
+                raise ValueError("channels.zalo: pairing_code phải dài 8–256 ký tự")
+        if self.pairing_code_secret and not self.pairing_code_secret.strip():
+            raise ValueError("channels.zalo: pairing_code_secret không hợp lệ")
         if self.mode == "webhook":
-            if not self.webhook_url.startswith("https://"):
+            parsed = urlparse(self.webhook_url)
+            if parsed.scheme != "https" or not parsed.hostname:
                 raise ValueError(
-                    "channels.zalo: mode=webhook đòi hỏi webhook_url HTTPS (fail-closed)"
+                    "channels.zalo: mode=webhook đòi hỏi webhook_url HTTPS có hostname"
                 )
+            if parsed.username or parsed.password or parsed.query or parsed.fragment:
+                raise ValueError(
+                    "channels.zalo: webhook_url không được chứa credential/query/fragment"
+                )
+            if (
+                not self.webhook_path.startswith("/")
+                or self.webhook_path == "/"
+                or "?" in self.webhook_path
+                or "#" in self.webhook_path
+            ):
+                raise ValueError("channels.zalo: webhook_path phải là absolute path riêng")
             n = len(self.webhook_secret or "")
-            if n < 8 or n > 256:
+            if self.webhook_secret and (
+                n < 8
+                or n > 256
+                or self.webhook_secret != self.webhook_secret.strip()
+                or any(
+                    ord(char) < 0x20 or ord(char) == 0x7F
+                    for char in self.webhook_secret
+                )
+            ):
                 raise ValueError(
                     "channels.zalo: mode=webhook đòi hỏi webhook_secret 8–256 ký tự (fail-closed)"
+                )
+            if not self.webhook_secret and not self.webhook_secret_secret.strip():
+                raise ValueError(
+                    "channels.zalo: mode=webhook cần webhook_secret_secret hoặc "
+                    "webhook_secret inline"
                 )
         return self
 
