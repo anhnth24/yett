@@ -83,4 +83,10 @@ class BasicGate:
                 f"vpn từ chối tham số lạ {sorted(extra)} — chỉ action+profile",
                 "VPN_EXTRA_ARGS",
             )
+        if action in {"connect", "disconnect"}:
+            return Decision(
+                "need_approval",
+                f"model yêu cầu VPN {action}; operator CLI không đi qua model gate",
+                "VPN_LIFECYCLE_APPROVAL",
+            )
         return Decision("allow", "vpn profile đã khai báo", "VPN_PROFILE")

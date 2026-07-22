@@ -6,7 +6,7 @@ Lệnh:
   yett traces list|get chạy trên state dir
   yett usage           tổng chi theo provider
   yett memory list|approve|reject  duyệt đề xuất MEMORY.md (staging → merge)
-  yett vpn connect|disconnect|status <profile>  operator pre-connect VPN (openfortivpn/openvpn)
+  yett vpn connect <profile>  operator foreground VPN owner (Ctrl+C disconnects)
 Các lệnh nối provider thật (chat) cần config + secret; khung sẵn ở đây.
 """
 
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import signal
 import sys
 from pathlib import Path
 
@@ -77,7 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     vpn = sub.add_parser(
         "vpn",
-        help="operator: connect/disconnect/status VPN profile (pre-connect trước SSH)",
+        help="operator: foreground connect VPN profile (Ctrl+C disconnects owned process)",
     )
     vpn.add_argument("action", choices=["connect", "disconnect", "status"])
     vpn.add_argument("profile", help="tên profile trong remote.vpn_profiles")
@@ -338,10 +339,11 @@ def _cmd_chat(args) -> int:
 
 
 def _cmd_vpn(args) -> int:
-    """Operator CLI: bật/tắt/status VPN theo profile allowlist — cùng runner với tool path.
+    """Operator CLI: foreground owner for a profile-allowlisted VPN.
 
-    Không in secret; lỗi UserFacingError đã redact. Không claim tunnel thật đã verify —
-    chỉ báo kết quả từ runner (process ownership / marker CLI).
+    Không in secret; lỗi UserFacingError đã redact. Readiness chỉ dựa vào marker CLI + process
+    stability, không claim route/DNS thật. status/disconnect từ process khác fail closed thay vì
+    nhận nuôi PID không còn chứng minh được ownership.
     """
     from yett.config.loader import load_config
     from yett.errors import UserFacingError, YettError
@@ -374,23 +376,49 @@ def _cmd_vpn(args) -> int:
         try:
             if args.action == "connect":
                 await mgr.ensure(args.profile)
-                print(f"[yett] VPN '{args.profile}' đã kết nối")
-                return 0
-            if args.action == "disconnect":
-                await mgr.disconnect(args.profile)
-                print(f"[yett] VPN '{args.profile}' đã ngắt")
-                return 0
-            connected = await mgr.status(args.profile)
+                print(
+                    f"[yett] VPN '{args.profile}' đã kết nối; tiến trình này đang sở hữu tunnel. "
+                    "Giữ terminal mở, nhấn Ctrl+C để ngắt."
+                )
+                while await mgr.status(args.profile):
+                    await asyncio.sleep(1)
+                print(
+                    f"[yett] VPN '{args.profile}' đã dừng ngoài dự kiến.",
+                    file=sys.stderr,
+                )
+                return 1
             print(
-                f"[yett] VPN '{args.profile}': "
-                f"{'connected' if connected else 'disconnected'}"
+                "[yett] status/disconnect không nhận nuôi PID từ lần chạy CLI khác. "
+                "Kiểm tra/ngắt bằng Ctrl+C tại terminal `yett vpn connect` đang sở hữu tunnel.",
+                file=sys.stderr,
             )
-            return 0
+            return 1
+        except asyncio.CancelledError:
+            try:
+                await asyncio.shield(mgr.disconnect(args.profile))
+            except UserFacingError:
+                pass
+            raise
         except UserFacingError as e:
             print(f"[yett] {redact(str(e))}", file=sys.stderr)
             return 1
+        finally:
+            mgr.close()
 
-    return asyncio.run(_run())
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def _stop(_signum, _frame) -> None:
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _stop)
+    try:
+        try:
+            return asyncio.run(_run())
+        except KeyboardInterrupt:
+            print(f"\n[yett] VPN '{args.profile}' đã ngắt")
+            return 130
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 if __name__ == "__main__":

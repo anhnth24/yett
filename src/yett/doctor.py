@@ -72,7 +72,7 @@ CHECKS: list[Check] = [
         "openvpn", "cli", "openvpn", False,
         "VPN OpenVPN (tool vpn kind=openvpn; config_file .ovpn tuyệt đối + secret auth)",
         {
-            "windows": "winget install -e --id OpenVPNTechnologies.OpenVPN",
+            "windows": "VPN runtime yett không chạy native — dùng WSL2: sudo apt install openvpn",
             "macos": "brew install openvpn",
             "linux": "sudo apt install openvpn",
         },
@@ -150,14 +150,21 @@ def _vpn_config_problems(config_path: str | Path) -> list[str]:
                     f"host '{hn}' vpn_required='{h.vpn_required}' nhưng remote.vpn_profiles trống"
                 )
         return problems
+    if _os_key() == "windows":
+        problems.append(
+            "VPN subprocess runtime không hỗ trợ Windows native; chạy yett + VPN trong WSL2"
+        )
     needed: set[str] = set()
     for name, vp in profiles.items():
         needed.add(vp.kind)
         if vp.kind == "openvpn" and vp.config_file:
-            cf = Path(vp.config_file)
-            if not cf.is_file():
+            try:
+                from yett.tools.remote.vpn import _open_config_nofollow
+
+                _open_config_nofollow(vp.config_file)
+            except Exception as exc:
                 problems.append(
-                    f"vpn profile '{name}': config_file không tồn tại hoặc không phải file"
+                    f"vpn profile '{name}': config_file bị từ chối ({exc})"
                 )
     for kind in sorted(needed):
         probe = "openfortivpn" if kind == "openfortivpn" else "openvpn"

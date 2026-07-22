@@ -142,7 +142,9 @@ yett demo
   nên hardline vẫn phủ. Muốn cô lập mạnh hơn → cài Docker Desktop, đặt `backend: docker`.
 - Quyền `600` cho `secrets/llm_key` không enforce chuẩn trên NTFS (ACL khác POSIX) — key vẫn
   nằm ngoài config/git, nhưng nếu cần chặt hãy dùng cách §A (Docker) hoặc DPAPI/keyring sau.
-- Tính năng SSH/VPN (khi nối) hợp Linux hơn — Windows native nên tập trung vào trợ lý + DB.
+- SSH chạy đa nền tảng, nhưng VPN subprocess runtime **từ chối Windows native**; chạy cả yett
+  và `openvpn`/`openfortivpn` trong WSL2. Cài OpenVPN GUI trên Windows không làm cho process
+  yett trong Windows sở hữu/kiểm soát tunnel đó.
 
 ---
 
@@ -212,7 +214,9 @@ yett usage --by provider --state state  # chi phí theo provider
 - **Hiệu năng file:** project trên `/mnt/c` `/mnt/d` (ổ Windows/NTFS) chạy git/exec **chậm**.
   Nếu chậm, clone project hay dùng vào ext4 của WSL (`~/work/...`) và trỏ `projects.path` vào đó.
 - **VPN:** khai `remote.vpn_profiles` (`kind: openfortivpn|openvpn`), đặt secret password,
-  rồi `yett vpn connect <profile>` hoặc để SSH tự `ensure` khi `host.vpn_required` khớp.
+  rồi chạy `yett vpn connect <profile>` ở foreground (giữ terminal mở, `Ctrl+C` để ngắt)
+  hoặc để SSH tự `ensure` khi `host.vpn_required` khớp. `status`/`disconnect` từ invocation
+  CLI khác không nhận nuôi PID; đây là ranh giới ownership có chủ ý.
   Nếu FortiClient chạy trên Windows host, kiểm tra SSH từ WSL2 có qua tunnel không; nếu
   không, dùng `openfortivpn` trong WSL2. Chưa claim đã verify routing trên mọi máy.
 - **Docker:** phải bật WSL integration trong Docker Desktop. Không có Docker → đặt tạm
