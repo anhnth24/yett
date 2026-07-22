@@ -161,8 +161,9 @@ subagents_enabled: true
 #       log_paths: [/var/log/app/*.log]
 #       deploy_script: /opt/deploy/run.sh   # lệnh deploy DUY NHẤT được phép (phải duyệt)
 # Cần cài: pip install asyncssh; openfortivpn và/hoặc openvpn (xem `yett doctor`)
-# Gate: SSH pre-connect tự ensure; model gọi VPN connect/disconnect trực tiếp cần operator approval,
-# status được allow theo profile. Model không thể truyền flag/config path tùy ý.
+# Gate: SSH/log tới host cần VPN phải được operator duyệt trước khi pre-connect; model gọi VPN
+# connect/disconnect trực tiếp cũng cần approval, status được allow theo profile. Model không thể
+# truyền flag/config path tùy ý.
 
 # ---- Sandbox ----
 sandbox:

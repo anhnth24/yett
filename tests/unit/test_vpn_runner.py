@@ -809,6 +809,56 @@ async def test_ssh_preconnect_propagates_cancel_token() -> None:
     assert vpn.seen is Ctx.cancel
 
 
+async def test_ssh_preconnect_cannot_run_when_approval_is_denied() -> None:
+    from yett.tools.registry import Registry
+    from yett.tools.remote.hostprofile import HostProfile, HostRegistry
+    from yett.tools.remote.ssh_exec import SshExecTool
+    from yett.tools.wiring import execute_tool
+
+    class CaptureVpn:
+        calls = 0
+
+        async def ensure(self, profile, *, cancel=None):
+            self.calls += 1
+
+    class CaptureSsh:
+        calls = 0
+
+        async def run(self, host, cmd, *, key):
+            self.calls += 1
+            return (0, "ok", "")
+
+    async def deny(_tool: str, _args: dict) -> bool:
+        return False
+
+    hosts = HostRegistry(
+        {
+            "uat": HostProfile(
+                address="10.0.0.1",
+                auth="keyfile:k",
+                vpn_required="office",
+            )
+        }
+    )
+    vpn = CaptureVpn()
+    ssh = CaptureSsh()
+    registry = Registry()
+    registry.register(
+        SshExecTool(hosts, ssh, InMemorySecretStore({"k": "KEY"}), vpn=vpn)
+    )
+    result = await execute_tool(
+        "ssh_exec",
+        {"host": "uat", "cmd": "tail -n 10 /var/log/app/x.log"},
+        _Ctx(),
+        gate=BasicGate(SecurityCfg(), hosts=hosts),
+        registry=registry,
+        approver=deny,
+    )
+    assert result.is_error and "approval" in result.content
+    assert vpn.calls == 0
+    assert ssh.calls == 0
+
+
 def test_openvpn_config_requires_ovpn_suffix(tmp_path: Path) -> None:
     config = tmp_path / "client.conf"
     config.write_text("client\n", encoding="utf-8")

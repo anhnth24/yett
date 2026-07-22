@@ -19,6 +19,12 @@ def _gate() -> BasicGate:
         "uat": HostProfile(address="10.0.0.1", auth="keyfile:k",
                            log_paths=["/var/log/app/*.log"], deploy_script="/opt/deploy/run.sh"),
         "prod": HostProfile(address="10.0.0.9", auth="keyfile:k", tier="restricted"),
+        "vpn-uat": HostProfile(
+            address="10.0.0.2",
+            auth="keyfile:k",
+            vpn_required="office",
+            log_paths=["/var/log/app/*.log"],
+        ),
     })
     return BasicGate(SecurityCfg(), hosts=hosts)
 
@@ -52,6 +58,25 @@ def test_ssh_restricted_no_deploy() -> None:
 def test_log_read_known_host_allowed() -> None:
     dec = safe_evaluate(_gate(), "log_read", {"host": "uat", "path": "/var/log/app/e.log"}, _Ctx())
     assert dec.verdict == "allow"
+
+
+def test_vpn_preconnect_requires_approval_for_readonly_ssh_and_log() -> None:
+    ssh = safe_evaluate(
+        _gate(),
+        "ssh_exec",
+        {"host": "vpn-uat", "cmd": "tail -n 100 /var/log/app/x.log"},
+        _Ctx(),
+    )
+    log = safe_evaluate(
+        _gate(),
+        "log_read",
+        {"host": "vpn-uat", "path": "/var/log/app/e.log"},
+        _Ctx(),
+    )
+    assert ssh.verdict == "need_approval"
+    assert ssh.rule_id == "SSH_VPN_PRECONNECT_APPROVAL"
+    assert log.verdict == "need_approval"
+    assert log.rule_id == "LOG_READ_VPN_PRECONNECT_APPROVAL"
 
 
 # --- P1-9/RT-13: log_read containment thật ở tầng TOOL (Gate chỉ kiểm host tồn tại, "tool tự

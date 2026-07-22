@@ -54,12 +54,31 @@ class BasicGate:
         if not self._hosts.has(host_name):
             return Decision("deny", f"host '{host_name}' chưa đăng ký — không cho SSH đại", "SSH_UNKNOWN_HOST")
         host = self._hosts.resolve(host_name)
-        return cmdguard.gate_ssh(str(args.get("cmd", "")), deploy_script=host.deploy_script, tier=host.tier)
+        decision = cmdguard.gate_ssh(
+            str(args.get("cmd", "")), deploy_script=host.deploy_script, tier=host.tier
+        )
+        # SshExecTool auto-connects a required VPN after this Gate.  An otherwise read-only
+        # SSH command must not turn that network-changing side effect into an implicit allow.
+        # Existing deny/approval decisions remain stricter or equivalent.
+        if decision.verdict == "allow" and host.vpn_required:
+            return Decision(
+                "need_approval",
+                f"host '{host_name}' cần tự kết nối VPN '{host.vpn_required}' trước SSH",
+                "SSH_VPN_PRECONNECT_APPROVAL",
+            )
+        return decision
 
     def _gate_log_read(self, args: dict) -> Decision:
         host_name = str(args.get("host", ""))
         if not self._hosts.has(host_name):
             return Decision("deny", f"host '{host_name}' chưa đăng ký", "SSH_UNKNOWN_HOST")
+        host = self._hosts.resolve(host_name)
+        if host.vpn_required:
+            return Decision(
+                "need_approval",
+                f"host '{host_name}' cần tự kết nối VPN '{host.vpn_required}' trước đọc log",
+                "LOG_READ_VPN_PRECONNECT_APPROVAL",
+            )
         # log_read chỉ tail read-only trong log_paths (tool tự kiểm path) → cho phép.
         return Decision("allow", "log_read read-only", "LOG_READ")
 
