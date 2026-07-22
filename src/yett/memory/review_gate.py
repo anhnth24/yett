@@ -277,7 +277,10 @@ class MemoryReviewGate:
         else:
             import fcntl
 
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            # Windows typeshed exposes an empty ``fcntl`` compatibility module even
+            # though this branch is POSIX-only; dynamic lookup keeps cross-OS mypy
+            # honest without weakening the runtime lock.
+            getattr(fcntl, "flock")(fd, getattr(fcntl, "LOCK_EX"))
 
     @staticmethod
     def _unlock_file(fd: int) -> None:
@@ -290,7 +293,7 @@ class MemoryReviewGate:
             else:
                 import fcntl
 
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                getattr(fcntl, "flock")(fd, getattr(fcntl, "LOCK_UN"))
         except OSError:
             pass
 
