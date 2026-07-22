@@ -113,6 +113,7 @@ class OwnedProcess:
     _capture_output: bool = True
     _identity: str | None = None
     _pidfd: int | None = None
+    _owns_process_group: bool = False
 
     def returncode(self) -> int | None:
         poll = getattr(self._proc, "poll", None)
@@ -126,6 +127,32 @@ class OwnedProcess:
 
     def kill(self) -> None:
         self._signal(_KILL_SIGNAL)
+
+    def terminate_group(self) -> None:
+        self._signal_owned_group(_TERMINATE_SIGNAL)
+
+    def kill_group(self) -> None:
+        self._signal_owned_group(_KILL_SIGNAL)
+
+    def _signal_owned_group(self, sig: signal.Signals) -> None:
+        """Signal only the session created at spawn, while its unreaped leader proves ownership."""
+        if not self._owns_process_group or self.returncode() is not None:
+            self._signal(sig)
+            return
+        try:
+            if self._identity is not None and _process_identity(self.pid) != self._identity:
+                return
+            getpgid = getattr(os, "getpgid", None)
+            killpg = getattr(os, "killpg", None)
+            if not callable(getpgid) or not callable(killpg):
+                self._signal(sig)
+                return
+            if getpgid(self.pid) != self.pid:
+                self._signal(sig)
+                return
+            killpg(self.pid, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            self._signal(sig)
 
     def _signal(self, sig: signal.Signals) -> None:
         """Never signal a numeric process group that could now belong to another process."""
@@ -243,6 +270,7 @@ class SubprocessArgvCommander:
             _proc=proc,
             _identity=_process_identity(pid),
             _pidfd=pidfd,
+            _owns_process_group=True,
         )
         try:
             if stdin is not None and proc.stdin is not None:
@@ -261,7 +289,7 @@ class SubprocessArgvCommander:
                 owned._reader_threads.append(thread)
                 thread.start()
         except BaseException:
-            owned.kill()
+            owned.kill_group()
             try:
                 proc.wait(timeout=2)
             except Exception:
@@ -487,11 +515,11 @@ class SubprocessVpnRunner:
             return False
         try:
             if kill and sess.process.returncode() is None:
-                sess.process.terminate()
+                sess.process.terminate_group()
                 try:
                     await sess.process.wait(timeout=_DISCONNECT_WAIT_SEC)
                 except (asyncio.TimeoutError, TimeoutError):
-                    sess.process.kill()
+                    sess.process.kill_group()
                     try:
                         await sess.process.wait(timeout=2.0)
                     except Exception:
@@ -509,7 +537,7 @@ class SubprocessVpnRunner:
             return
         if proc is not None:
             if proc.returncode() is None:
-                proc.kill()
+                proc.kill_group()
                 try:
                     await proc.wait(timeout=2.0)
                 except Exception:
@@ -554,12 +582,12 @@ class SubprocessVpnRunner:
                     continue
                 sess.process.suppress_output()
                 if sess.process.returncode() is None:
-                    sess.process.terminate()
+                    sess.process.terminate_group()
                     deadline = time.monotonic() + _DISCONNECT_WAIT_SEC
                     while sess.process.returncode() is None and time.monotonic() < deadline:
                         time.sleep(0.02)
                     if sess.process.returncode() is None:
-                        sess.process.kill()
+                        sess.process.kill_group()
                         kill_deadline = time.monotonic() + 2.0
                         while (
                             sess.process.returncode() is None
