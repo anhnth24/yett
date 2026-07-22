@@ -105,22 +105,65 @@ projects:
 #     pairing_code: "yett-ghep-2026"   # gửi mã này cho bot để tự ghép (rỗng = tắt pairing)
 #     allowed_chat_ids: []             # hoặc điền sẵn chat_id đã biết
 #     briefing_hour: 8                 # gửi briefing tự động lúc 8h (theo timezone); bỏ = tắt
+#
+# ---- Kênh Zalo Official Bot API (KHÔNG phải Zalo Personal / unofficial) ----
+# Tạo bot tại https://bot.zaloplatforms.com — token dạng "{id}:{secret}".
+# Docs: https://docs.zaloplatforms.com/docs/BOT/apis/getUpdates (poll) /
+#       https://docs.zaloplatforms.com/docs/BOT/apis/setWebhook (webhook) /
+#       https://docs.zaloplatforms.com/docs/BOT/apis/sendMessage (text ≤2000).
+# Secrets: export YETT_SECRET_ZALO_BOT_TOKEN="...", YETT_SECRET_ZALO_PAIRING_CODE="...",
+# YETT_SECRET_ZALO_WEBHOOK_SECRET="..." (hoặc backend secret tương ứng).
+# Egress: thêm bot-api.zaloplatforms.com. mode=webhook fail-closed nếu thiếu HTTPS + secret 8–256.
+# channels:
+#   zalo:
+#     enabled: true
+#     token_secret: zalo_bot_token
+#     pairing_code_secret: zalo_pairing_code
+#     allowed_chat_ids: []             # chat_id string (có thể hex-like, không chỉ số)
+#     mode: poll                       # poll | webhook (getUpdates ⊥ webhook theo docs Zalo)
+#     poll_timeout_sec: 30
+#     # mode: webhook
+#     # webhook_url: "https://example.com/api/channels/zalo/webhook"
+#     # webhook_secret_secret: zalo_webhook_secret
+#     # webhook_path: /api/channels/zalo/webhook
+#     briefing_hour: 8
 
 # ---- Bật/tắt skills & subagents ----
 skills_enabled: true
 subagents_enabled: true
 
-# ---- Server SSH (deploy UAT, đọc log). Host lạ → deny; xóa file → cấm tuyệt đối ----
+# ---- Server SSH + VPN (deploy UAT, đọc log). Host lạ → deny; xóa file → cấm tuyệt đối ----
+# VPN: model chỉ chọn TÊN profile (allowlist). Credentials = TÊN secret, giá trị không vào
+# context/span/log. CLI argv cố định (không shell, không flag tùy ý từ model).
+# Operator pre-connect: `yett vpn connect <profile>` chạy foreground; giữ terminal mở,
+# Ctrl+C để ngắt process được lệnh đó sở hữu. Windows native không hỗ trợ; dùng WSL2.
 # remote:
+#   vpn_profiles:
+#     office:                         # openfortivpn (Fortinet SSL) — khuyến nghị trên WSL2
+#       kind: openfortivpn
+#       host: vpn.example.com
+#       port: 443
+#       username: you@example.com     # hoặc username_secret: vpn_user
+#       cred_secret: vpn_office_pw    # export YETT_SECRET_VPN_OFFICE_PW=... hoặc secrets/vpn_office_pw
+#     # home:                         # OpenVPN — config_file tuyệt đối, không symlink
+#     #   kind: openvpn
+#     #   config_file: /etc/openvpn/client.ovpn  # UTF-8, <=1 MiB, owner/root, dir không writable
+#     #                                           # cấm script/plugin/management/config recursion
+#     #   username: you
+#     #   cred_secret: vpn_home_pw
 #   hosts:
 #     uat-app-1:
 #       address: 10.0.0.10
 #       user: deploy
 #       auth: keyfile:uat_key        # đặt private key vào secrets/uat_key
+#       vpn_required: office         # tự bật VPN profile này trước SSH (fail-closed nếu thiếu)
 #       tier: uat                    # uat cho deploy; restricted chỉ đọc
 #       log_paths: [/var/log/app/*.log]
 #       deploy_script: /opt/deploy/run.sh   # lệnh deploy DUY NHẤT được phép (phải duyệt)
-# Cần cài: pip install asyncssh
+# Cần cài: pip install asyncssh; openfortivpn và/hoặc openvpn (xem `yett doctor`)
+# Gate: SSH/log tới host cần VPN phải được operator duyệt trước khi pre-connect; model gọi VPN
+# connect/disconnect trực tiếp cũng cần approval, status được allow theo profile. Model không thể
+# truyền flag/config path tùy ý.
 
 # ---- Sandbox ----
 sandbox:
@@ -137,7 +180,18 @@ sandbox:
 # Thêm api.search.brave.com vào egress.allowlist bên dưới. Kết quả URL ngoài allowlist bị lọc.
 # Nhớ thêm rule: { tool: web_search, effect: allow } ở security.allowlist.
 
-# ---- Egress allowlist (domain web_fetch/search được phép) ----
+# ---- image_gen (OpenAI-compatible Images API; key trong secret store) ----
+# image:
+#   provider: openai_compat
+#   model: dall-e-3
+#   api_key_secret: image_key    # export YETT_SECRET_IMAGE_KEY="sk-..."
+#   # base_url: https://api.openai.com/v1   # mặc định; đổi nếu dùng proxy/self-host
+#   response_format: b64_json    # b64_json (khuyến nghị) | url (tải qua egress allowlist)
+#   timeout_sec: 60              # giới hạn toàn bộ một lần gọi/tải ảnh (1..300 giây)
+# Host API (api.openai.com) phải có trong egress.allowlist. Ảnh chỉ ghi trong workspace.
+# Nhớ thêm rule: { tool: image_gen, effect: allow } ở security.allowlist.
+
+# ---- Egress allowlist (domain web_fetch/search/image được phép) ----
 egress:
   allowlist:
     - api.z.ai               # GLM (quốc tế)
@@ -145,9 +199,10 @@ egress:
     - api.minimax.io         # MiniMax
     - api.deepseek.com       # DeepSeek
     - generativelanguage.googleapis.com  # Gemini
-    - api.openai.com         # OpenAI
+    - api.openai.com         # OpenAI (+ image_gen mặc định)
     - api.anthropic.com      # Anthropic
     - api.telegram.org       # Kênh Telegram (nếu bật channels.telegram)
+    - bot-api.zaloplatforms.com  # Kênh Zalo Official Bot API (nếu bật channels.zalo)
     # - api.search.brave.com # web_search (Brave) — bỏ comment nếu bật search ở trên
     # - github.com
 

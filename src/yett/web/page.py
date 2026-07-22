@@ -244,7 +244,9 @@ const CFIELDS={
   host:[['name','id (uat-01)'],['address','address (10.0.0.5)'],['user','user (deploy)'],
     ['port','port (22)'],['auth','tên secret keyfile (ssh_uat01)'],['tier','tier: uat | restricted'],
     ['vpn_required','vpn (tùy chọn)'],['log_paths','log_paths, phẩy (tùy chọn)'],['deploy_script','deploy_script (tùy chọn)']],
-  vpn:[['name','id (fortinet-hn)'],['cred_secret','tên secret (vpn_fortinet)']],
+  vpn:[['name','id (office)'],['kind','openfortivpn|openvpn'],['host','host (vpn.example.com; openfortivpn)'],
+    ['port','port (443)'],['username','username (hoặc để trống dùng username_secret)'],
+    ['cred_secret','tên secret password (vpn_office_pw)'],['config_file','config_file tuyệt đối (.ovpn; openvpn)']],
   db:[['name','id (uat)'],['driver','postgres|mysql|sqlserver|sqlite'],['dsn_secret','tên secret DSN (uat_dsn)']],
 };
 function renderCfields(){ const k=$('ckind').value;
@@ -257,7 +259,18 @@ function credYaml(k,v){
     if(v.log_paths) s+='\\n      log_paths: '+yList(csvArr(v.log_paths));
     if(v.deploy_script) s+='\\n      deploy_script: '+v.deploy_script;
     return s; }
-  if(k==='vpn') return 'remote:\\n  vpn_profiles:\\n    '+(v.name||'VPN')+': { cred_secret: '+(v.cred_secret||'SECRET_NAME')+' }';
+  if(k==='vpn'){
+    const kind=v.kind||'openfortivpn';
+    let s='remote:\\n  vpn_profiles:\\n    '+(v.name||'VPN')+':\\n      kind: '+kind;
+    if(kind==='openvpn'){
+      s+='\\n      config_file: '+(v.config_file||'/etc/openvpn/client.ovpn');
+    }else{
+      s+='\\n      host: '+(v.host||'vpn.example.com')+'\\n      port: '+(v.port||'443');
+    }
+    if(v.username) s+='\\n      username: '+v.username;
+    s+='\\n      cred_secret: '+(v.cred_secret||'SECRET_NAME');
+    return s;
+  }
   return 'databases:\\n  '+(v.name||'DB')+': { driver: '+(v.driver||'postgres')+', dsn_secret: '+(v.dsn_secret||'SECRET_NAME')+', readonly: true }';
 }
 function projYaml(v){ let s='projects:\\n  '+(v.name||'PROJECT')+':\\n    path: '+(v.path||'/path/to/project');

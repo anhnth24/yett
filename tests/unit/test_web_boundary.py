@@ -134,6 +134,29 @@ def test_malformed_content_length_rejected(tmp_path: Path, server: _Server) -> N
     conn.close()
 
 
+def test_duplicate_content_length_and_transfer_encoding_rejected(server: _Server) -> None:
+    import http.client
+
+    conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
+    conn.putrequest("POST", "/api/chat")
+    conn.putheader("Content-Length", "0")
+    conn.putheader("Content-Length", "0")
+    conn.endheaders()
+    response = conn.getresponse()
+    response.read()
+    assert response.status == 400
+    conn.close()
+
+    conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
+    conn.putrequest("POST", "/api/chat")
+    conn.putheader("Transfer-Encoding", "chunked")
+    conn.endheaders()
+    response = conn.getresponse()
+    response.read()
+    assert response.status == 400
+    conn.close()
+
+
 def test_config_get_redacts_secret(tmp_path: Path) -> None:
     cfg_path = tmp_path / "harness.yaml"
     cfg_path.write_text(

@@ -135,3 +135,104 @@ def test_telegram_dispatches_to_real_app(tmp_path: Path) -> None:
     assert sent and sent[-1]["chat_id"] == "555"
     assert "deploy đang chạy" in sent[-1]["text"]
     app.close()
+
+
+def test_zalo_dispatches_to_real_app(tmp_path: Path) -> None:
+    """Tin Zalo Official Bot từ chat đã ghép → App.chat thật → reply sendMessage (offline)."""
+    import threading
+
+    from yett.channels.gating import ChannelGate
+    from yett.channels.zalo_bot import ZaloChannel, ZaloClient
+    from yett.config.models import ChannelsCfg, ZaloCfg
+
+    (tmp_path / "ws").mkdir(parents=True)
+    cfg = _cfg(
+        tmp_path,
+        channels=ChannelsCfg(zalo=ZaloCfg(enabled=True, allowed_chat_ids=["3becaa50ae12474c1e03"])),
+    )
+    app = App(
+        provider=FakeProvider([text_result("Zalo: deploy ổn.")]),
+        cfg=cfg,
+        state_dir=tmp_path / "st",
+        secrets=InMemorySecretStore(),
+        clock=_clock(),
+    )
+    assert "Zalo Bot API" in app.capabilities_summary()
+
+    sent: list[dict] = []
+
+    def transport(url: str, params: dict, *, timeout_sec: float = 60.0) -> dict:
+        method = url.rsplit("/", 1)[-1]
+        if method == "getUpdates":
+            return {
+                "ok": True,
+                "result": {
+                    "event_name": "message.text.received",
+                    "message": {
+                        "message_id": "mid-1",
+                        "from": {"id": "3becaa50ae12474c1e03"},
+                        "chat": {"id": "3becaa50ae12474c1e03", "chat_type": "PRIVATE"},
+                        "date": 1,
+                        "text": "deploy tới đâu rồi?",
+                    },
+                },
+            }
+        sent.append(params)
+        return {"ok": True, "result": {}}
+
+    ch = ZaloChannel(
+        ZaloClient("TOK", transport=transport, max_retries=0),
+        ChannelGate(allowed_chat_ids={"3becaa50ae12474c1e03"}),
+        get_app=lambda: app,
+        chat_lock=threading.Lock(),
+    )
+    ch.poll_once()
+    assert sent and sent[-1]["chat_id"] == "3becaa50ae12474c1e03"
+    assert "deploy ổn" in sent[-1]["text"]
+    app.close()
+
+
+def test_zalo_unauthorized_does_not_reach_app(tmp_path: Path) -> None:
+    """Sender ngoài allowlist → không gọi App.chat; chỉ trả hướng dẫn ghép."""
+    import threading
+
+    from yett.channels.gating import ChannelGate
+    from yett.channels.zalo_bot import ZaloChannel, ZaloClient
+
+    (tmp_path / "ws").mkdir(parents=True)
+    # Provider sẽ fail nếu bị gọi — FakeProvider hết script thì lỗi.
+    app = App(
+        provider=FakeProvider([]),
+        cfg=_cfg(tmp_path),
+        state_dir=tmp_path / "st",
+        secrets=InMemorySecretStore(),
+        clock=_clock(),
+    )
+    sent: list[dict] = []
+
+    def transport(url: str, params: dict, *, timeout_sec: float = 60.0) -> dict:
+        if url.rsplit("/", 1)[-1] == "sendMessage":
+            sent.append(params)
+        return {"ok": True, "result": {}}
+
+    ch = ZaloChannel(
+        ZaloClient("TOK", transport=transport, max_retries=0),
+        ChannelGate(allowed_chat_ids=set()),
+        get_app=lambda: app,
+        chat_lock=threading.Lock(),
+        pairing_code="PAIR-ME",
+        # default run_chat would hit empty FakeProvider — must not be called
+    )
+    ch.handle_update(
+        {
+            "event_name": "message.text.received",
+            "message": {
+                "message_id": "m-u",
+                    "from": {"id": "stranger", "is_bot": False},
+                "chat": {"id": "stranger", "chat_type": "PRIVATE"},
+                "text": "deploy giúp",
+            },
+        }
+    )
+    assert sent and "Chưa được cấp quyền" in sent[-1]["text"]
+    app.close()

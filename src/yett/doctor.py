@@ -58,15 +58,25 @@ CHECKS: list[Check] = [
     Check("pymysql", "py", "pymysql", False, "query MySQL", {
         "windows": "pip install pymysql", "macos": "pip install pymysql", "linux": "pip install pymysql",
     }),
-    Check("openfortivpn", "cli", "openfortivpn", False, "VPN Fortinet (đọc log/deploy qua VPN)", {
-        "windows": "KHÔNG có bản Windows — chạy trong WSL2: sudo apt install openfortivpn "
-                   "(hoặc dùng FortiClient GUI)",
-        "macos": "brew install openfortivpn", "linux": "sudo apt install openfortivpn",
-    }),
-    Check("openvpn", "cli", "openvpn", False, "VPN OpenVPN", {
-        "windows": "winget install -e --id OpenVPNTechnologies.OpenVPN",
-        "macos": "brew install openvpn", "linux": "sudo apt install openvpn",
-    }),
+    Check(
+        "openfortivpn", "cli", "openfortivpn", False,
+        "VPN Fortinet SSL (tool vpn kind=openfortivpn; tự bật trước SSH nếu host.vpn_required)",
+        {
+            "windows": "KHÔNG có bản Windows native — chạy trong WSL2: sudo apt install openfortivpn "
+                       "(hoặc FortiClient GUI trên Windows host; kiểm tra routing WSL→tunnel)",
+            "macos": "brew install openfortivpn",
+            "linux": "sudo apt install openfortivpn",
+        },
+    ),
+    Check(
+        "openvpn", "cli", "openvpn", False,
+        "VPN OpenVPN (tool vpn kind=openvpn; config_file .ovpn tuyệt đối + secret auth)",
+        {
+            "windows": "VPN runtime yett không chạy native — dùng WSL2: sudo apt install openvpn",
+            "macos": "brew install openvpn",
+            "linux": "sudo apt install openvpn",
+        },
+    ),
     Check("pyinstaller", "py", "PyInstaller", False, "đóng gói yett.exe", {
         "windows": "pip install pyinstaller", "macos": "pip install pyinstaller",
         "linux": "pip install pyinstaller",
@@ -117,11 +127,65 @@ def _docker_config_problem(config_path: str | Path) -> str | None:
     return docker_unavailable_reason()
 
 
+def _vpn_config_problems(config_path: str | Path) -> list[str]:
+    """Khi config khai `remote.vpn_profiles`, binary theo `kind` không còn tùy chọn cho
+    operator dùng VPN/SSH pre-connect. Trả danh sách mô tả vấn đề (thiếu binary / host
+    trỏ profile không tồn tại). Config lỗi → [] (validate riêng)."""
+    p = Path(config_path)
+    if not p.exists():
+        return []
+    try:
+        from yett.config.loader import load_config
+
+        cfg = load_config(p)
+    except Exception:
+        return []
+    problems: list[str] = []
+    profiles = cfg.remote.vpn_profiles
+    if not profiles:
+        # Host yêu cầu VPN nhưng không có profile → App fail-closed lúc start; báo ở đây.
+        for hn, h in cfg.remote.hosts.items():
+            if h.vpn_required:
+                problems.append(
+                    f"host '{hn}' vpn_required='{h.vpn_required}' nhưng remote.vpn_profiles trống"
+                )
+        return problems
+    if _os_key() == "windows":
+        problems.append(
+            "VPN subprocess runtime không hỗ trợ Windows native; chạy yett + VPN trong WSL2"
+        )
+    needed: set[str] = set()
+    for name, vp in profiles.items():
+        needed.add(vp.kind)
+        if vp.kind == "openvpn" and vp.config_file:
+            try:
+                from yett.tools.remote.vpn import _open_config_nofollow
+
+                _open_config_nofollow(vp.config_file)
+            except Exception as exc:
+                problems.append(
+                    f"vpn profile '{name}': config_file bị từ chối ({exc})"
+                )
+    for kind in sorted(needed):
+        probe = "openfortivpn" if kind == "openfortivpn" else "openvpn"
+        if shutil.which(probe) is None:
+            problems.append(
+                f"remote.vpn_profiles dùng kind={kind} nhưng không tìm thấy '{probe}' trong PATH"
+            )
+    for hn, h in cfg.remote.hosts.items():
+        if h.vpn_required and h.vpn_required not in profiles:
+            problems.append(
+                f"host '{hn}' vpn_required='{h.vpn_required}' không có trong remote.vpn_profiles"
+            )
+    return problems
+
+
 def run_doctor(emit=print, config_path: str | Path = "config/harness.yaml") -> int:
     """In trạng thái từng công cụ + cách cài phần thiếu. Trả số công cụ BẮT BUỘC còn thiếu.
 
     Nếu tìm thấy config tại `config_path` khai `sandbox.backend: docker`, kiểm thêm Docker
-    CLI/daemon — lúc đó backend không còn tùy chọn (App fail-closed nếu thiếu)."""
+    CLI/daemon — lúc đó backend không còn tùy chọn (App fail-closed nếu thiếu).
+    Nếu khai `remote.vpn_profiles`, kiểm binary openfortivpn/openvpn theo kind."""
     osk = _os_key()
     emit(f"yett doctor — hệ điều hành: {osk}\n")
     missing_required = 0
@@ -148,6 +212,10 @@ def run_doctor(emit=print, config_path: str | Path = "config/harness.yaml") -> i
     if docker_problem:
         emit(f"\n✗ config '{config_path}' khai sandbox.backend=docker nhưng {docker_problem}.")
         emit("   → 'yett chat'/'yett serve' sẽ TỪ CHỐI khởi động (fail-closed), KHÔNG hạ cấp về host.")
+        missing_required += 1
+    for vpn_problem in _vpn_config_problems(config_path):
+        emit(f"\n✗ config '{config_path}': {vpn_problem}.")
+        emit("   → tool vpn / SSH pre-connect sẽ fail-closed cho đến khi cài binary + sửa profile.")
         missing_required += 1
     if missing_required == 0:
         emit("\n✓ Đủ điều kiện chạy yett (core). Tool tùy chọn cài thêm khi cần.")

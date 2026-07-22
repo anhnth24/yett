@@ -25,7 +25,7 @@ Chọn 1 trong 10+ model top (GLM 5.2, MiniMax M3, DeepSeek, Gemini, GPT-5.5, Cl
 
 ## Trạng thái implement
 
-Đã có code chạy được + test cho lõi cả 3 phase. Phần cần tài nguyên ngoài (LLM API thật, Docker daemon, SSH/VPN tới server thật, Telegram) được thiết kế qua interface + backend inject được, và test bằng fake/offline — đúng nguyên tắc no-egress trong test.
+Đã có code chạy được + test cho lõi cả 3 phase. Phần cần tài nguyên ngoài (LLM API thật, Docker daemon, SSH/VPN tới server thật, Telegram/Zalo Bot API) được thiết kế qua interface + backend inject được, và test bằng fake/offline — đúng nguyên tắc no-egress trong test.
 
 **Chú giải cột "Kiểm chứng":** ✅ e2e = có test lắp ráp thật (App/loop thật, không chỉ gọi hàm lẻ). 🟡 fake/wired = logic đúng khi chạy qua `FakeProvider`/stand-in hoặc đã wire vào `App` nhưng backend thật (provider/API/Docker daemon) **chưa** được quan sát chạy trên máy này — có thể còn lệch khi nối thật. ❌ chưa wire = cấu hình cho phép nhưng đường chạy thật (`App`/`yett chat`) chưa thực sự dùng tới (tool/gate tồn tại, không có caller thật).
 
@@ -42,13 +42,14 @@ Chọn 1 trong 10+ model top (GLM 5.2, MiniMax M3, DeepSeek, Gemini, GPT-5.5, Cl
 | Tracing + span store + cost ledger | ✅ e2e | `test_obs` |
 | Memory: workspace file (AGENTS/SOUL/MEMORY.md → system prompt) **(wired vào `yett chat`)** | ✅ e2e | `test_memory`, verify `App.chat` |
 | Memory: review gate (staging cho agent đề xuất ghi MEMORY.md) **(wired vào `yett chat` + CLI)** | ✅ e2e — tool `memory_propose` đăng ký qua App → Gate→Registry→Filters, chỉ ghi `memory/pending/`; `write_file`/`ImmutableCore` chặn ghi thẳng `MEMORY.md`; người vận hành `yett memory list\|approve\|reject` | `test_memory`, `test_memory_review`, `test_memory_write_invariant` |
-| Remote ops: host profile + ssh_exec + log_read + vpn | 🟡 fake (backend inject, chưa SSH/VPN thật) | `test_remote_db` |
+| Remote ops: host profile + ssh_exec + log_read + vpn | 🟡 fake/wired — SSH/VPN CLI runner inject được; App wire `SubprocessVpnRunner` (openfortivpn/openvpn, argv-only, secret qua file tạm 0600); **chưa verify tunnel thật** trên máy này | `test_remote_db`, `test_vpn_runner` |
 | DB tools: db_query/db_config read-only 4 lớp | 🟡 fake (executor inject, chưa DB thật ngoài sqlite) | `test_remote_db` |
 | Skills: loader + disclosure + lint + review gate **(wired vào `yett chat`)** | ✅ e2e | `test_skills_hooks_sched`, `test_group2_wired` |
 | Hooks: mutate/deny + cách ly lỗi **(wired)** | ✅ e2e | `test_skills_hooks_sched` |
 | Scheduler: cron + overlap + unattended approval timeout | ✅ e2e | `test_skills_hooks_sched` |
 | Eval suite golden tasks | ✅ e2e | `test_eval_websearch` |
 | **`web_search` tool** **(wired vào `yett chat` / `build_app`)** | 🟡 fake — đăng ký qua `App._wire_search()` khi có `search:` + secret store; invoke qua `App.chat` với transport inject (Brave backend offline); key thiếu/rỗng fail an toàn; kết quả lọc egress allowlist; secret không vào context/span. **Chưa gọi Brave API thật** | `test_eval_websearch`, `test_web_search_wired` |
+| **`image_gen` tool** **(wired vào `yett chat` / `build_app`)** | 🟡 fake — đăng ký qua `App._wire_image()` khi có `image:` + secret store; invoke qua `App.chat` với backend/transport inject (OpenAI-compatible Images offline); ảnh decode + sniff MIME, ghi atomic trong workspace; path traversal/symlink/oversize/malformed base64 bị từ chối; URL download mode chặn host ngoài allowlist + redirect; key thiếu/rỗng fail an toàn; secret không vào context/span; cost `per_call` vào ledger. **Chưa gọi Images API thật** | `test_image_gen`, `test_image_backend`, `test_image_gen_wired` |
 | Policy engine (policy-as-config, drop-in) + immutable core | ✅ e2e | `test_phase3` |
 | Audit hash-chain + retention + channel gating + analytics | ✅ e2e | `test_phase3`, `test_phase3_extra` |
 | Subagent delegation 1 cấp (không leo thang quyền) **(wired)** | ✅ e2e | `test_phase3`, `test_group2_wired` |
@@ -61,7 +62,8 @@ Chọn 1 trong 10+ model top (GLM 5.2, MiniMax M3, DeepSeek, Gemini, GPT-5.5, Cl
 | **Trợ lý cá nhân: task/goal store + tool (task_add/list/update) + briefing chủ động** **(wired vào `yett chat` + web tab "Việc")** | ✅ e2e | `test_tasks`, `test_assistant`, `test_web_console_endpoints` |
 | **Code navigation: list_dir/grep/search scoped** + complexity router + anti-loop step-budget | ✅ e2e | `test_codenav`, `test_complexity`, `test_core_loop` |
 | **Kênh Telegram: long-poll + gating/pairing + dispatch→App.chat + notify tool + briefing tự động** **(wired vào `yett serve`)** | 🟡 fake — logic đúng qua transport inject (getUpdates/sendMessage), dispatch chạy App.chat thật; **chưa gọi api.telegram.org thật** (cần bot token) | `test_telegram`, `test_assistant` (notify + e2e dispatch) |
-| VPN/SSH CLI thật | ⏳ interface + backend inject sẵn, cần tài nguyên ngoài để nối | — |
+| **Kênh Zalo Official Bot API** (không Zalo Personal): poll/webhook + gating/pairing + normalize/chunk ≤2000 + dispatch→App.chat + notify + token redact + fail-closed webhook config **(wired vào `yett serve` / config / capabilities)** | 🟡 fake — contract offline qua transport inject (`bot-api.zaloplatforms.com` shape: `getUpdates` single-object + timeout string, `sendMessage`, webhook `X-Bot-Api-Secret-Token`); **chưa gọi Bot API thật** (cần token từ [bot.zaloplatforms.com](https://bot.zaloplatforms.com); assumptions ghi trong `channels/zalo_bot.py`) | `test_zalo_bot`, `test_zalo_channel_wired`, `test_assistant` (zalo dispatch) |
+| VPN/SSH CLI thật | 🟡 wired — `SubprocessVpnRunner` + tool `vpn` + foreground `yett vpn connect` + SSH pre-connect `ensure`; adversarial offline tests; readiness dựa trên marker CLI + process còn sống, **chưa chứng minh route/DNS hay quan sát openfortivpn/openvpn live** | `test_vpn_runner` |
 
 ## Repo này sẽ làm gì
 
@@ -112,7 +114,7 @@ Nhãn phase theo lộ trình: **[v0.1]** MVP → **[v0.2]** mở rộng cho agen
 Use-case đầu tiên: trợ lý DevOps cá nhân chạy local — quản lý project, báo cáo tiến độ, code, deploy UAT, điều tra lỗi, kiểm tra dữ liệu (spec: `docs/harness-local-use-case.md`).
 
 - **[v0.2] SSH remote ops** — chỉ đến host khai báo trong profile config; lệnh phân lớp: read-only log/status tự động cho phép, deploy script khai báo trước phải approval từng lần, còn lại mặc định từ chối. **Hardline: tuyệt đối không lệnh xóa file OS qua SSH/VPN** (rm, find -delete, xargs rm, mọi biến thể né tránh) — không có đường approval; xóa hợp lệ duy nhất là bên trong deploy script do người dùng tự viết.
-- **[v0.2] VPN** — bọc OpenVPN/Fortinet client (đánh giá openfortivpn), tự bật trước khi SSH nếu host yêu cầu; credentials nằm trong secret store, không bao giờ vào context của model.
+- **[v0.2] VPN** — bọc `openfortivpn` / `openvpn` trên POSIX/WSL2 (argv cố định từ profile allowlist, không shell, không flag từ model); tự bật trước khi SSH nếu `host.vpn_required`; credentials qua secret store → file tạm 0600 (cleanup bắt buộc), không vào context/span/log/error. Mọi model call SSH/log tới host cần VPN phải được duyệt trước khi pre-connect; gọi connect/disconnect trực tiếp cũng phải duyệt. Operator dùng `yett vpn connect <profile>` ở foreground và giữ terminal mở; `Ctrl+C` ngắt đúng process do lệnh đó sở hữu. Một invocation khác không nhận nuôi PID để status/disconnect, tránh PID-reuse và ngắt nhầm tunnel.
 - **[v0.2] Query DB an toàn** — connection profile trong secret store (model chỉ thấy tên profile); phòng thủ 4 lớp: DB user read-only → session read-only → SQL classifier trong Policy Gate (chỉ SELECT/SHOW/EXPLAIN/DESCRIBE; parse fail = từ chối) → approval tường minh từng câu cho write. **Hardline: không ALTER/DROP/TRUNCATE/DELETE/UPDATE nếu không được phép tường minh.**
 - **[v0.2] Báo cáo tiến độ project** — skill tổng hợp từ workspace các project + git log, chạy tay hoặc theo cron.
 
@@ -142,7 +144,10 @@ Use-case đầu tiên: trợ lý DevOps cá nhân chạy local — quản lý pr
 
 ### Kênh giao tiếp
 - **[v0.1] CLI/TUI** — kênh duy nhất của MVP.
-- **[v0.3] Telegram → Zalo Bot API** — theo thứ tự độ khó đã verify. **Chủ đích không làm:** Zalo Personal (phụ thuộc thư viện unofficial reverse-engineered, rủi ro ToS) và WeChat (plugin đóng của bên thứ ba, không portable).
+- **[v0.3] Telegram** — long-poll Bot API, wired `yett serve` (fake/offline verified).
+- **[v0.3] Zalo Official Bot API** — `channels.zalo` (poll mặc định hoặc webhook HTTPS + secret); gating/pairing như Telegram; **không** Zalo Personal. Docs tham chiếu: [getUpdates](https://docs.zaloplatforms.com/docs/BOT/apis/getUpdates), [setWebhook](https://docs.zaloplatforms.com/docs/BOT/apis/setWebhook), [sendMessage](https://docs.zaloplatforms.com/docs/BOT/apis/sendMessage). **Chủ đích không làm:** Zalo Personal (lib unofficial) và WeChat (plugin đóng, không portable).
+  - Kiểm chứng hiện tại là contract/integration **offline** theo tài liệu công khai; chưa gọi live API vì không có credential/test bot. Bảng `getUpdates` ghi `timeout` là String nhưng sample gửi number (adapter theo bảng/String). Tài liệu cũng chưa chốt semantics idempotency/retry của `sendMessage`, body 429/`Retry-After`, lịch retry webhook, retention replay, hay cách đếm emoji trong giới hạn 2000. Adapter vì vậy chỉ retry outbound khi nhận 429 tường minh, chunk bảo thủ theo UTF-16, và dedupe `(chat_id, message_id)` trong cửa sổ RAM của một process (không tuyên bố exactly-once qua restart).
+  - Pairing là bearer code chỉ cho chat `PRIVATE`, có rate limit và chỉ tồn tại tới khi process restart. Nên giữ bot token, pairing code và webhook secret trong secret backend qua các field `*_secret`; field inline chỉ để tương thích config cũ và luôn bị redact khỏi web config.
 
 ### Defer có chủ đích (chưa làm, có điều kiện mở lại)
 - Semantic memory / knowledge graph — chỉ khi FTS5 đo được là không đủ.

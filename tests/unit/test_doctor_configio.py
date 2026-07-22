@@ -123,3 +123,80 @@ def test_config_save_can_change_secret(tmp_path: Path) -> None:
     )
     assert write_config_text(p, new) is None
     assert "brand-new-key-value" in p.read_text(encoding="utf-8")
+
+
+def test_channel_bearer_secrets_are_redacted_and_restored_by_mapping_path(
+    tmp_path: Path,
+) -> None:
+    p = tmp_path / "harness.yaml"
+    telegram_code = "telegram-pair-123"
+    zalo_code = "zalo-pair-456"
+    webhook_secret = "zalo-webhook-secret-789"
+    p.write_text(
+        "provider:\n  name: fake\n  model: fake\n"
+        "workspace_root: ./workspace\n"
+        "channels:\n"
+        "  telegram:\n"
+        f"    pairing_code: {telegram_code}\n"
+        "  zalo:\n"
+        "    enabled: true\n"
+        f"    pairing_code: {zalo_code}\n"
+        "    mode: webhook\n"
+        "    webhook_url: https://example.test/api/channels/zalo/webhook\n"
+        f"    webhook_secret: {webhook_secret}\n",
+        encoding="utf-8",
+    )
+    redacted = read_config_text_redacted(p)
+    for secret in (telegram_code, zalo_code, webhook_secret):
+        assert secret not in redacted
+    assert redacted.count("[REDACTED]") == 3
+    assert write_config_text(p, redacted) is None
+    restored = p.read_text(encoding="utf-8")
+    assert telegram_code in restored
+    assert zalo_code in restored
+    assert webhook_secret in restored
+
+
+def test_config_restore_does_not_move_secret_between_channel_blocks(tmp_path: Path) -> None:
+    """Removing Telegram must not make its same-indented pairing_code overwrite Zalo."""
+    p = tmp_path / "harness.yaml"
+    telegram_code = "telegram-pair-123"
+    zalo_code = "zalo-pair-456"
+    p.write_text(
+        "provider:\n  name: fake\n  model: fake\n"
+        "workspace_root: ./workspace\n"
+        "channels:\n"
+        "  telegram:\n"
+        f"    pairing_code: {telegram_code}\n"
+        "  zalo:\n"
+        "    enabled: true\n"
+        f"    pairing_code: {zalo_code}\n",
+        encoding="utf-8",
+    )
+    redacted = read_config_text_redacted(p)
+    # Simulate deleting the whole Telegram block in the browser while retaining Zalo's marker.
+    submitted = redacted.replace(
+        '  telegram:\n    pairing_code: "[REDACTED]"\n',
+        "",
+    )
+    assert write_config_text(p, submitted) is None
+    restored = p.read_text(encoding="utf-8")
+    assert telegram_code not in restored
+    assert zalo_code in restored
+
+
+def test_config_validation_error_does_not_echo_webhook_secret() -> None:
+    invalid_secret = "leakme"
+    text = (
+        "provider:\n  name: fake\n  model: fake\n"
+        "workspace_root: ./workspace\n"
+        "channels:\n"
+        "  zalo:\n"
+        "    enabled: true\n"
+        "    mode: webhook\n"
+        "    webhook_url: https://example.test/hook\n"
+        f"    webhook_secret: {invalid_secret}\n"
+    )
+    error = validate_config_text(text)
+    assert error is not None
+    assert invalid_secret not in error

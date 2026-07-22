@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+_VPN_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+_VPN_HOST_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,252}[A-Za-z0-9])?$")
+_VPN_SECRET_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 
 class ProviderCfg(BaseModel):
@@ -87,6 +93,23 @@ class SearchCfg(BaseModel):
     base_url: str | None = None  # mặc định theo provider; override khi self-host/proxy
 
 
+class ImageCfg(BaseModel):
+    """Cấu hình image_gen. API key chỉ là TÊN secret — giá trị nằm ở secret store."""
+
+    api_key_secret: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z_][A-Za-z0-9_-]*$",
+    )
+    provider: Literal["openai_compat"] = "openai_compat"
+    model: str = Field(default="dall-e-3", min_length=1, max_length=200)
+    # Mặc định OpenAI Images API; override khi dùng endpoint OpenAI-compatible khác.
+    base_url: str | None = None
+    # b64_json = không tải URL ngoài; url = tải ảnh qua egress allowlist (fail-closed).
+    response_format: Literal["b64_json", "url"] = "b64_json"
+    timeout_sec: float = Field(default=60.0, gt=0, le=300, allow_inf_nan=False)
+
+
 class HostCfg(BaseModel):
     """Server SSH khai báo trước (spec P2 §2.1). Host lạ → deny (không SSH đại)."""
 
@@ -100,9 +123,97 @@ class HostCfg(BaseModel):
     deploy_script: str | None = None
 
 
+class VpnProfileCfg(BaseModel):
+    """Profile VPN khai báo trước (spec P2 §2.3). Model chỉ được chọn TÊN profile — không
+    truyền flag/argv tùy ý. Credentials là TÊN secret; giá trị lấy tại điểm dùng cuối.
+
+    kind=openfortivpn: host (+ port) + cred_secret (password); username có thể plaintext
+    hoặc username_secret.
+    kind=openvpn: config_file tuyệt đối tới .ovpn; nếu cần user/pass thì cred_secret
+    (+ username / username_secret) → file auth tạm, KHÔNG đưa password lên argv.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["openfortivpn", "openvpn"] = "openfortivpn"
+    cred_secret: str = ""  # TÊN secret password; rỗng = không auth-user-pass (vd cert-only)
+    username: str = ""
+    username_secret: str = ""
+    host: str = ""  # openfortivpn
+    port: int = Field(default=443, ge=1, le=65535)
+    config_file: str = ""  # openvpn — absolute path
+    connect_timeout_sec: int = Field(default=60, ge=1, le=600)
+
+    @field_validator("host")
+    @classmethod
+    def _host_safe(cls, v: str) -> str:
+        v = (v or "").strip()
+        if v and _VPN_HOST_RE.fullmatch(v) is None:
+            raise ValueError(
+                "vpn host chỉ được hostname/IPv4 (chữ, số, '.', '-'); không khoảng trắng/metachar"
+            )
+        return v
+
+    @field_validator("config_file")
+    @classmethod
+    def _config_file_abs(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            return ""
+        p = Path(v)
+        if not p.is_absolute():
+            raise ValueError("vpn config_file phải là đường dẫn tuyệt đối")
+        # Chặn traversal lexical trước khi runner mở file (O_NOFOLLOW).
+        if ".." in p.parts:
+            raise ValueError("vpn config_file không được chứa '..'")
+        if p.suffix.lower() != ".ovpn":
+            raise ValueError("vpn config_file phải có đuôi .ovpn")
+        return v
+
+    @field_validator("cred_secret", "username_secret")
+    @classmethod
+    def _secret_name_safe(cls, v: str) -> str:
+        v = (v or "").strip()
+        if v and _VPN_SECRET_NAME_RE.fullmatch(v) is None:
+            raise ValueError("tên VPN secret không hợp lệ")
+        return v
+
+    @field_validator("username")
+    @classmethod
+    def _username_safe(cls, v: str) -> str:
+        if any(c in v for c in ("\x00", "\r", "\n")):
+            raise ValueError("vpn username chứa ký tự điều khiển")
+        return v
+
+    @model_validator(mode="after")
+    def _kind_fields(self) -> VpnProfileCfg:
+        if self.kind == "openfortivpn":
+            if not self.host:
+                raise ValueError("openfortivpn cần 'host'")
+            if not self.cred_secret:
+                raise ValueError("openfortivpn cần 'cred_secret' (TÊN secret password)")
+        elif self.kind == "openvpn":
+            if not self.config_file:
+                raise ValueError("openvpn cần 'config_file'")
+        if self.username and self.username_secret:
+            raise ValueError("chỉ chọn một trong 'username' hoặc 'username_secret'")
+        return self
+
+
 class RemoteCfg(BaseModel):
     hosts: dict[str, HostCfg] = Field(default_factory=dict)
-    vpn_profiles: dict[str, dict] = Field(default_factory=dict)  # name -> {cred_secret: <tên>}
+    vpn_profiles: dict[str, VpnProfileCfg] = Field(default_factory=dict)
+
+    @field_validator("vpn_profiles")
+    @classmethod
+    def _profile_names(cls, v: dict[str, VpnProfileCfg]) -> dict[str, VpnProfileCfg]:
+        for name in v:
+            if _VPN_PROFILE_NAME_RE.fullmatch(name) is None:
+                raise ValueError(
+                    f"tên vpn profile '{name}' không hợp lệ "
+                    "(chỉ [A-Za-z0-9_-], bắt đầu bằng chữ/số, ≤64 ký tự)"
+                )
+        return v
 
 
 class TelegramCfg(BaseModel):
@@ -117,8 +228,96 @@ class TelegramCfg(BaseModel):
     poll_timeout_sec: int = 25              # long-poll getUpdates
 
 
+class ZaloCfg(BaseModel):
+    """Kênh Zalo Official Bot API (spec P3 §4) — không phải Zalo Personal.
+
+    Token là secret (không plaintext). Fail-closed: enabled + mode=webhook đòi hỏi
+    HTTPS webhook_url + secret 8–256 ký tự (validate lúc load config).
+    """
+
+    enabled: bool = False
+    token_secret: str = "zalo_bot_token"  # TÊN secret, giá trị ở secret store/env
+    allowed_chat_ids: list[str] = Field(default_factory=list)
+    pairing_code: str = ""  # legacy inline value; prefer pairing_code_secret
+    pairing_code_secret: str = ""
+    briefing_hour: int | None = Field(default=None, ge=0, le=23)
+    poll_timeout_sec: int = Field(default=30, ge=1, le=120)
+    mode: Literal["poll", "webhook"] = "poll"
+    webhook_url: str = ""
+    webhook_secret: str = ""  # legacy inline value; prefer webhook_secret_secret
+    webhook_secret_secret: str = ""
+    webhook_path: str = "/api/channels/zalo/webhook"
+    http_timeout_sec: float = Field(default=60.0, gt=0, le=300)
+    max_retries: int = Field(default=2, ge=0, le=8)
+
+    @model_validator(mode="after")
+    def _fail_closed_webhook(self) -> "ZaloCfg":
+        if not self.enabled:
+            return self
+        if not self.token_secret.strip():
+            raise ValueError("channels.zalo: token_secret không được rỗng khi enabled")
+        normalized_ids: list[str] = []
+        for chat_id in self.allowed_chat_ids:
+            normalized = chat_id.strip()
+            if (
+                not normalized
+                or len(normalized) > 256
+                or any(ord(char) < 0x20 or ord(char) == 0x7F for char in normalized)
+            ):
+                raise ValueError("channels.zalo: allowed_chat_ids chứa ID không hợp lệ")
+            normalized_ids.append(normalized)
+        self.allowed_chat_ids = list(dict.fromkeys(normalized_ids))
+        if self.pairing_code:
+            if self.pairing_code != self.pairing_code.strip():
+                raise ValueError("channels.zalo: pairing_code không được có whitespace ở hai đầu")
+            if (
+                not 8 <= len(self.pairing_code) <= 256
+                or any(ord(char) < 0x20 or ord(char) == 0x7F for char in self.pairing_code)
+            ):
+                raise ValueError("channels.zalo: pairing_code phải dài 8–256 ký tự")
+        if self.pairing_code_secret and not self.pairing_code_secret.strip():
+            raise ValueError("channels.zalo: pairing_code_secret không hợp lệ")
+        if self.mode == "webhook":
+            parsed = urlparse(self.webhook_url)
+            if parsed.scheme != "https" or not parsed.hostname:
+                raise ValueError(
+                    "channels.zalo: mode=webhook đòi hỏi webhook_url HTTPS có hostname"
+                )
+            if parsed.username or parsed.password or parsed.query or parsed.fragment:
+                raise ValueError(
+                    "channels.zalo: webhook_url không được chứa credential/query/fragment"
+                )
+            if (
+                not self.webhook_path.startswith("/")
+                or self.webhook_path == "/"
+                or "?" in self.webhook_path
+                or "#" in self.webhook_path
+            ):
+                raise ValueError("channels.zalo: webhook_path phải là absolute path riêng")
+            n = len(self.webhook_secret or "")
+            if self.webhook_secret and (
+                n < 8
+                or n > 256
+                or self.webhook_secret != self.webhook_secret.strip()
+                or any(
+                    ord(char) < 0x20 or ord(char) == 0x7F
+                    for char in self.webhook_secret
+                )
+            ):
+                raise ValueError(
+                    "channels.zalo: mode=webhook đòi hỏi webhook_secret 8–256 ký tự (fail-closed)"
+                )
+            if not self.webhook_secret and not self.webhook_secret_secret.strip():
+                raise ValueError(
+                    "channels.zalo: mode=webhook cần webhook_secret_secret hoặc "
+                    "webhook_secret inline"
+                )
+        return self
+
+
 class ChannelsCfg(BaseModel):
     telegram: TelegramCfg = Field(default_factory=TelegramCfg)
+    zalo: ZaloCfg = Field(default_factory=ZaloCfg)
 
 
 class HarnessCfg(BaseModel):
@@ -131,6 +330,7 @@ class HarnessCfg(BaseModel):
     remote: RemoteCfg = Field(default_factory=RemoteCfg)
     channels: ChannelsCfg = Field(default_factory=ChannelsCfg)
     search: SearchCfg | None = None
+    image: ImageCfg | None = None
     egress: EgressCfg = Field(default_factory=EgressCfg)
     sandbox: SandboxCfg = Field(default_factory=SandboxCfg)
     security: SecurityCfg = Field(default_factory=SecurityCfg)

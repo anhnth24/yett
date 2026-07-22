@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 import yaml
+from pydantic import ValidationError
 
 from yett.config.models import HarnessCfg
 
@@ -15,8 +16,9 @@ _KV_RE = re.compile(r"^(\s*)([A-Za-z0-9_.-]+):[ \t]*(.*?)\s*$")
 
 # Field inline chứa secret THẬT (che theo TÊN field, không dựa vào định dạng value — vì
 # redactor theo pattern chỉ bắt sk-…, bỏ sót key GLM `id.secret` là provider mặc định).
-# Chỉ che `api_key` (inline key); `api_key_secret`/`dsn_secret` là TÊN tham chiếu, không phải value.
-_SECRET_FIELDS = frozenset({"api_key"})
+# Reference fields such as api_key_secret/dsn_secret are names, not values. These fields
+# contain bearer credentials directly and must never be returned by GET /api/config.
+_SECRET_FIELDS = frozenset({"api_key", "pairing_code", "webhook_secret"})
 
 
 def _redact_secret_fields(text: str) -> str:
@@ -57,30 +59,57 @@ def read_config_text_redacted(path: str | Path) -> str:
 def _restore_redacted_secrets(original_text: str, submitted_text: str) -> str:
     """Khôi phục secret bị che trước khi lưu: dòng `key: ...` nào trong bản gửi lên còn
     chứa marker redact thì lấy lại value nguyên văn từ file gốc trên đĩa (khớp theo
-    thụt-lề + key). Giữ nguyên comment/format bản gửi lên; chỉ đụng dòng có marker.
+    full mapping path). Giữ nguyên comment/format bản gửi lên; chỉ đụng dòng có marker.
 
-    Chỉ khớp value cả-dòng == một cặp `key: value`. Trùng (indent, key) ở nhiều block
-    thì lấy dòng gốc đầu tiên — đủ cho ca thực tế (chỉ block provider active không bị
-    comment). Người dùng muốn ĐỔI secret vẫn gõ giá trị mới (không còn marker) như thường.
+    Không được chỉ khớp `(indent, key)`: `channels.telegram.pairing_code` và
+    `channels.zalo.pairing_code` có cùng indent/key. Nếu người dùng xóa hoặc đổi thứ tự một
+    block, matching theo occurrence sẽ gắn secret của kênh này sang kênh kia. Người dùng
+    muốn ĐỔI secret vẫn gõ giá trị mới (không còn marker) như thường.
     """
     if _REDACT_MARKER not in submitted_text:
         return submitted_text
-    original_vals: dict[tuple[str, str], str] = {}
-    for line in original_text.splitlines():
+    original_vals: dict[tuple[str, ...], list[str]] = {}
+    for line, path in _mapping_paths(original_text):
         m = _KV_RE.match(line)
         if m and _REDACT_MARKER not in m.group(3):
-            original_vals.setdefault((m.group(1), m.group(2)), m.group(3))
+            original_vals.setdefault(path, []).append(m.group(3))
     out: list[str] = []
-    for line in submitted_text.splitlines():
+    submitted_occurrences: dict[tuple[str, ...], int] = {}
+    for line, path in _mapping_paths(submitted_text):
         m = _KV_RE.match(line)
-        if m and _REDACT_MARKER in m.group(3):
-            orig = original_vals.get((m.group(1), m.group(2)))
-            if orig is not None:
-                out.append(f"{m.group(1)}{m.group(2)}: {orig}")
+        if m:
+            index = submitted_occurrences.get(path, 0)
+            submitted_occurrences[path] = index + 1
+            originals = original_vals.get(path, [])
+            if _REDACT_MARKER in m.group(3) and index < len(originals):
+                out.append(f"{m.group(1)}{m.group(2)}: {originals[index]}")
                 continue
         out.append(line)
     joined = "\n".join(out)
     return joined + "\n" if submitted_text.endswith("\n") else joined
+
+
+def _mapping_paths(text: str) -> list[tuple[str, tuple[str, ...]]]:
+    """Return scalar/mapping lines with their indentation-derived YAML mapping paths.
+
+    Harness secret-bearing fields are mappings rather than sequence entries. Syntax and
+    schema validation still run after restoration; this helper only prevents ambiguous
+    cross-block secret substitution while preserving the submitted formatting/comments.
+    """
+    stack: list[tuple[int, str]] = []
+    out: list[tuple[str, tuple[str, ...]]] = []
+    for line in text.splitlines():
+        match = _KV_RE.match(line)
+        if match is None:
+            out.append((line, ()))
+            continue
+        indent = len(match.group(1))
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        path = tuple(key for _, key in stack) + (match.group(2),)
+        out.append((line, path))
+        stack.append((indent, match.group(2)))
+    return out
 
 
 def validate_config_text(text: str) -> str | None:
@@ -91,8 +120,16 @@ def validate_config_text(text: str) -> str | None:
         return f"YAML lỗi cú pháp: {e}"
     try:
         HarnessCfg.model_validate(raw)
-    except Exception as e:  # noqa: BLE001 — trả lỗi cho UI
-        return f"Config không hợp lệ: {e}"
+    except ValidationError as e:
+        # Pydantic's default string includes input_value, which may be a webhook/pairing
+        # secret. Return only field locations and validator messages.
+        details = "; ".join(
+            f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+            for error in e.errors(include_input=False)
+        )
+        return f"Config không hợp lệ: {details}"
+    except Exception as e:  # noqa: BLE001 — lỗi không-Pydantic, không kèm config input
+        return f"Config không hợp lệ: {type(e).__name__}"
     return None
 
 

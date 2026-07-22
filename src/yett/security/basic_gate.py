@@ -12,9 +12,11 @@ from yett.security.gate import Decision, SessionCtx
 
 
 class BasicGate:
-    def __init__(self, security: SecurityCfg, hosts=None) -> None:
+    def __init__(self, security: SecurityCfg, hosts=None, vpn_profiles: set[str] | None = None) -> None:
         self._sec = security
         self._hosts = hosts  # HostRegistry | None — để phân lớp lệnh SSH theo host profile
+        # Tên profile VPN đã khai trong config — tool vpn chỉ allow khi profile ∈ tập này.
+        self._vpn_profiles = vpn_profiles
 
     def evaluate(self, tool: str, args: dict, ctx: SessionCtx) -> Decision:
         # 1) hardline deny-list — không gì override được
@@ -33,6 +35,8 @@ class BasicGate:
             return self._gate_ssh(args)
         if tool == "log_read" and self._hosts is not None:
             return self._gate_log_read(args)
+        if tool == "vpn" and self._vpn_profiles is not None:
+            return self._gate_vpn(args)
 
         # 2) allowlist per-deployment
         if dec := allowlist.match_allowlist(tool, args, self._sec.allowlist):
@@ -50,11 +54,58 @@ class BasicGate:
         if not self._hosts.has(host_name):
             return Decision("deny", f"host '{host_name}' chưa đăng ký — không cho SSH đại", "SSH_UNKNOWN_HOST")
         host = self._hosts.resolve(host_name)
-        return cmdguard.gate_ssh(str(args.get("cmd", "")), deploy_script=host.deploy_script, tier=host.tier)
+        decision = cmdguard.gate_ssh(
+            str(args.get("cmd", "")), deploy_script=host.deploy_script, tier=host.tier
+        )
+        # SshExecTool auto-connects a required VPN after this Gate.  An otherwise read-only
+        # SSH command must not turn that network-changing side effect into an implicit allow.
+        # Existing deny/approval decisions remain stricter or equivalent.
+        if decision.verdict == "allow" and host.vpn_required:
+            return Decision(
+                "need_approval",
+                f"host '{host_name}' cần tự kết nối VPN '{host.vpn_required}' trước SSH",
+                "SSH_VPN_PRECONNECT_APPROVAL",
+            )
+        return decision
 
     def _gate_log_read(self, args: dict) -> Decision:
         host_name = str(args.get("host", ""))
         if not self._hosts.has(host_name):
             return Decision("deny", f"host '{host_name}' chưa đăng ký", "SSH_UNKNOWN_HOST")
+        host = self._hosts.resolve(host_name)
+        if host.vpn_required:
+            return Decision(
+                "need_approval",
+                f"host '{host_name}' cần tự kết nối VPN '{host.vpn_required}' trước đọc log",
+                "LOG_READ_VPN_PRECONNECT_APPROVAL",
+            )
         # log_read chỉ tail read-only trong log_paths (tool tự kiểm path) → cho phép.
         return Decision("allow", "log_read read-only", "LOG_READ")
+
+    def _gate_vpn(self, args: dict) -> Decision:
+        action = str(args.get("action", ""))
+        if action not in ("connect", "disconnect", "status"):
+            return Decision("deny", "vpn action phải là connect|disconnect|status", "VPN_BAD_ACTION")
+        profile = str(args.get("profile", ""))
+        allowed = self._vpn_profiles or set()
+        if not profile or profile not in allowed:
+            return Decision(
+                "deny",
+                f"vpn profile '{profile}' không nằm trong allowlist config",
+                "VPN_UNKNOWN_PROFILE",
+            )
+        # Không cho model truyền thêm key (flag/argv). Chỉ action + profile.
+        extra = set(args) - {"action", "profile"}
+        if extra:
+            return Decision(
+                "deny",
+                f"vpn từ chối tham số lạ {sorted(extra)} — chỉ action+profile",
+                "VPN_EXTRA_ARGS",
+            )
+        if action in {"connect", "disconnect"}:
+            return Decision(
+                "need_approval",
+                f"model yêu cầu VPN {action}; operator CLI không đi qua model gate",
+                "VPN_LIFECYCLE_APPROVAL",
+            )
+        return Decision("allow", "vpn profile đã khai báo", "VPN_PROFILE")
