@@ -365,18 +365,32 @@ async def test_atomic_overwrite_rejects_destination_change(
     tool = ImageGenTool(
         _png_backend, InMemorySecretStore({"k": SECRET}), "k", scope=_scope(ws)
     )
-    original = tool._dest_snapshot
     calls = 0
 
-    def changed(dir_fd: int, name: str) -> tuple[int, ...] | None:
-        nonlocal calls
-        calls += 1
-        snapshot = original(dir_fd, name)
-        if calls == 2 and snapshot is not None:
-            return (*snapshot[:-1], snapshot[-1] ^ 0o100)
-        return snapshot
+    if image_gen_mod._supports_secure_dir_fd():
+        original_fd_snapshot = tool._dest_snapshot
 
-    monkeypatch.setattr(tool, "_dest_snapshot", changed)
+        def changed_fd(dir_fd: int, name: str) -> tuple[int, ...] | None:
+            nonlocal calls
+            calls += 1
+            snapshot = original_fd_snapshot(dir_fd, name)
+            if calls == 2 and snapshot is not None:
+                return (*snapshot[:-1], snapshot[-1] ^ 0o100)
+            return snapshot
+
+        monkeypatch.setattr(tool, "_dest_snapshot", changed_fd)
+    else:
+        original_path_snapshot = tool._path_dest_snapshot
+
+        def changed_path(path: Path) -> tuple[int, ...] | None:
+            nonlocal calls
+            calls += 1
+            snapshot = original_path_snapshot(path)
+            if calls == 2 and snapshot is not None:
+                return (*snapshot[:-1], snapshot[-1] ^ 0o100)
+            return snapshot
+
+        monkeypatch.setattr(tool, "_path_dest_snapshot", changed_path)
     result = await tool.run({"prompt": "x", "path": "out.png"}, _Ctx())
     assert result.is_error
     assert "TOCTOU" in result.content
