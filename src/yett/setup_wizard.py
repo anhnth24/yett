@@ -11,7 +11,7 @@ from typing import Callable
 
 import yaml
 
-from yett.provider.registry import OPENAI_COMPAT_BASE_URLS
+from yett.provider.registry import PROVIDER_BASE_URLS
 
 
 @dataclass
@@ -32,6 +32,8 @@ CATALOG: list[ProviderChoice] = [
     ProviderChoice("gemini", "Google Gemini", ["gemini-2.5-flash", "gemini-2.5-pro"],
                    "flash ~$0.3/$2.5"),
     ProviderChoice("openai", "OpenAI", ["gpt-5.4-mini", "gpt-5.5"], "mini ~$0.75/$4.5"),
+    ProviderChoice("anthropic", "Anthropic (Messages API native)",
+                   ["claude-haiku-4-5", "claude-sonnet-5", "claude-opus-4-8"], "haiku ~$1/$5"),
     ProviderChoice("anthropic_oai", "Anthropic (OpenAI-compat)",
                    ["claude-haiku-4-5", "claude-sonnet-5", "claude-opus-4-8"], "haiku ~$1/$5"),
     ProviderChoice("grok", "xAI Grok", ["grok-4.3"], "~$1.25/$2.5"),
@@ -66,10 +68,10 @@ def build_config(ans: Answers) -> dict:
     }
     if ans.base_url:
         provider["base_url"] = ans.base_url
-    elif ans.provider not in OPENAI_COMPAT_BASE_URLS:
+    elif ans.provider not in PROVIDER_BASE_URLS:
         provider["base_url"] = ans.base_url or ""
 
-    egress = _egress_for(ans.provider)
+    egress = _egress_for(ans.provider, ans.base_url)
     cfg: dict = {
         "provider": provider,
         "budget": {
@@ -88,6 +90,7 @@ def build_config(ans: Answers) -> dict:
                 {"tool": "write_file", "effect": "allow"},
                 {"tool": "exec", "arg_patterns": {"cmd": "^(git|ls|cat|grep|python|pytest|npm|go) "},
                  "effect": "allow"},
+                {"tool": "memory_propose", "effect": "allow"},
             ],
         },
         "secret_backend": "file",
@@ -97,8 +100,8 @@ def build_config(ans: Answers) -> dict:
     return cfg
 
 
-def _egress_for(provider: str) -> list[str]:
-    host = OPENAI_COMPAT_BASE_URLS.get(provider, "")
+def _egress_for(provider: str, base_url: str | None = None) -> list[str]:
+    host = base_url or PROVIDER_BASE_URLS.get(provider, "")
     from urllib.parse import urlparse
 
     domains = []
@@ -144,7 +147,7 @@ def run_wizard(
     ans.model = prov.models[_to_int(mchoice, 1, len(prov.models)) - 1]
 
     # base_url nếu provider không có mặc định
-    if prov.key not in OPENAI_COMPAT_BASE_URLS:
+    if prov.key not in PROVIDER_BASE_URLS:
         ans.base_url = prompt("Nhập base_url (endpoint OpenAI-compatible): ").strip()
 
     # Bước 3: API key

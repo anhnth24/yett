@@ -5,6 +5,8 @@ Tách khỏi cli.py để test được. clock/provider injectable → test offl
 
 from __future__ import annotations
 
+import os
+import stat
 import time
 from pathlib import Path, PurePosixPath
 from typing import Callable
@@ -17,10 +19,18 @@ from yett.core.complexity import ComplexityRouter
 from yett.core.context import assemble_context
 from yett.core.loop import AgentLoop, LoopConfig, TurnResult
 from yett.errors import UserFacingError
+from yett.memory.paths import (
+    MEMORY_AUDIT_FILENAME,
+    MEMORY_FILENAME,
+    MEMORY_LOCK_FILENAME,
+    PENDING_PARTS,
+)
+from yett.memory.review_gate import MemoryReviewGate
 from yett.memory.session import SessionStore
 from yett.memory.tasks import TaskStore
 from yett.memory.workspace import WorkspaceMemory
-from yett.obs.cost import compute_cost
+from yett.tools.builtin.memory import MemoryProposeTool
+from yett.obs.cost import compute_call_cost, compute_cost
 from yett.obs.spanstore import SpanStore
 from yett.provider.base import ChatResult, Provider
 from yett.provider.failover import FailoverRouter
@@ -28,6 +38,7 @@ from yett.policy.immutable import ImmutableCore
 from yett.security.basic_gate import BasicGate
 from yett.security.filters import redact_attrs
 from yett.security.gate import Decision, PolicyGate, SessionCtx
+from yett.tools.assist.web_search import SearchFn
 from yett.tools.builtin.codenav import GrepTool, ListDirTool, SearchTool
 from yett.tools.builtin.exec import ExecTool
 from yett.tools.builtin.files import ReadFileTool, WriteFileTool
@@ -131,6 +142,7 @@ class App:
         sandbox: Sandbox | None = None,
         fallback: Provider | None = None,
         fetcher=None,
+        search_fn: SearchFn | None = None,
         secrets=None,
         clock: Callable[[], float] = time.time,
         config_path: str | Path | None = None,
@@ -145,8 +157,13 @@ class App:
         self.cron = CronStore(state_dir / "cron.db")
         self.sessions = SessionStore(state_dir / "sessions.db")
         self.tasks = TaskStore(state_dir / "tasks.db", clock=clock)
+        Path(cfg.workspace_root).mkdir(parents=True, exist_ok=True)
         self.scope = ProjectScope(cfg.workspace_root, {n: p.path for n, p in cfg.projects.items()})
         self.workspace = WorkspaceMemory(cfg.workspace_root)
+        # Memory review gate: agent chỉ đề xuất vào staging qua tool memory_propose;
+        # MEMORY.md chỉ được ghi khi người vận hành duyệt (CLI `yett memory approve`).
+        self.memory_gate = MemoryReviewGate(Path(cfg.workspace_root))
+        self.memory_gate.ensure_storage()
         self.complexity = ComplexityRouter(cfg.router)
 
         roots = _project_roots(cfg)
@@ -156,7 +173,42 @@ class App:
         elif cfg.sandbox.backend == "docker":
             # Fail-closed: KHÔNG bao giờ hạ cấp âm thầm về host khi backend=docker.
             probe_docker()
-            sb = DockerSandbox(cfg.sandbox, mounts={str(h): c for h, c in roots.items()})
+            placeholder = (state_dir / ".memory-readonly-overlay").resolve()
+            try:
+                placeholder_fd = os.open(
+                    placeholder,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                    0o400,
+                )
+            except FileExistsError:
+                placeholder_fd = os.open(
+                    placeholder, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                )
+            try:
+                if not stat.S_ISREG(os.fstat(placeholder_fd).st_mode):
+                    raise UserFacingError("memory readonly overlay không phải regular file")
+            finally:
+                os.close(placeholder_fd)
+            ws = Path(cfg.workspace_root).resolve()
+            pending = self.memory_gate.pending_dir
+            overlay_fallback = str(placeholder)
+            overlays = {
+                "/workspace/MEMORY.md": (str(ws / MEMORY_FILENAME), overlay_fallback),
+                "/workspace/memory/pending": (str(pending), str(pending)),
+                "/workspace/memory/review-audit.jsonl": (
+                    str(ws / "memory" / MEMORY_AUDIT_FILENAME),
+                    overlay_fallback,
+                ),
+                "/workspace/.yett-memory-review.lock": (
+                    str(ws / MEMORY_LOCK_FILENAME),
+                    overlay_fallback,
+                ),
+            }
+            sb = DockerSandbox(
+                cfg.sandbox,
+                mounts={str(h): c for h, c in roots.items()},
+                readonly_overlays=overlays,
+            )
         else:
             sb = LocalSandbox()
         self.registry = Registry()
@@ -172,6 +224,7 @@ class App:
         self.registry.register(TaskAddTool(self.tasks))
         self.registry.register(TaskListTool(self.tasks))
         self.registry.register(TaskUpdateTool(self.tasks))
+        self.registry.register(MemoryProposeTool(self.memory_gate))
         # notify: kênh gắn muộn (serve_forever) qua set_notifier; getter để late-bind + hot-reload.
         self._notifier: Callable[[str], int] | None = None
         self.registry.register(NotifyTool(lambda: self._notifier))
@@ -192,8 +245,10 @@ class App:
             self._wire_skills(state_dir)
         if cfg.databases:
             self._wire_db()
+        # web_search: cần SearchCfg + secret store. search_fn injectable (test offline);
+        # không inject → dựng Brave backend thật (host API phải nằm trong egress allowlist).
         if cfg.search is not None and secrets is not None:
-            self._wire_search()
+            self._wire_search(search_fn)
 
         # Remote ops (SSH/VPN/log): host registry cần trước khi tạo Gate (Gate phân lớp theo host).
         self.host_registry: HostRegistry | None = None
@@ -203,12 +258,28 @@ class App:
         # Immutable core hardline TRƯỚC gate cấu hình: cấm sửa policy/identity + hardline
         # exec/ssh/db, không allowlist/rule nào đảo được. Protected = file config harness (chính
         # sách của agent) khi biết đường dẫn; luôn phủ hardline lệnh/SQL kể cả khi rỗng.
+        # MEMORY.md cũng protected: agent không write_file/exec ghi thẳng — chỉ merge qua
+        # MemoryReviewGate.approve (ngoài tool path). Staging + lock/audit metadata cũng là
+        # control-plane state: protect them from exec in local/dev mode as defense in depth
+        # (Docker additionally overlays all four paths read-only).
         protected: list[Path] = []
         if config_path is not None:
             try:
                 protected.append(Path(config_path).resolve())
             except (OSError, ValueError):
                 pass
+        try:
+            memory_root = Path(cfg.workspace_root)
+            protected.extend(
+                [
+                    (memory_root / MEMORY_FILENAME).resolve(),
+                    memory_root.joinpath(*PENDING_PARTS).resolve(),
+                    (memory_root / "memory" / MEMORY_AUDIT_FILENAME).resolve(),
+                    (memory_root / MEMORY_LOCK_FILENAME).resolve(),
+                ]
+            )
+        except (OSError, ValueError):
+            pass
         self.gate: PolicyGate = _ImmutableFirstGate(
             ImmutableCore(protected), BasicGate(cfg.security, hosts=self.host_registry)
         )
@@ -219,7 +290,9 @@ class App:
         router = FailoverRouter(provider, fallback, max_retries=cfg.provider.max_retries)
 
         def cost_fn(res: ChatResult) -> float:
-            return compute_cost(provider.name(), res.raw_model, res.usage, self._pricing)
+            return compute_cost(
+                res.provider_name or provider.name(), res.raw_model, res.usage, self._pricing
+            )
 
         self._loop_cfg = LoopConfig(
             max_iterations=cfg.budget.max_loop_iterations,
@@ -255,9 +328,33 @@ class App:
         }
         self.registry.register(DbQueryTool(profiles, RealDbExecutor(), self._secrets))
 
-    def _wire_search(self) -> None:
-        # web_search cần search backend cụ thể (nối sau); đăng ký khi có.
-        return None
+    def _wire_search(self, search_fn: SearchFn | None = None) -> None:
+        """Đăng ký `web_search` vào registry. Fail-closed: thiếu SearchCfg/secrets thì
+        caller không gọi hàm này; api_key_secret rỗng → không đăng ký (tool không tồn tại
+        thay vì chạy với key trống)."""
+        from yett.tools.assist.search_backend import BraveSearchBackend
+        from yett.tools.assist.web_search import WebSearchTool
+
+        scfg = self.cfg.search
+        if scfg is None or self._secrets is None:
+            return
+        if not scfg.api_key_secret:
+            return
+        allow = list(self.cfg.egress.allowlist)
+        # provider đã validate bởi SearchCfg (Literal); hiện chỉ brave.
+        fn: SearchFn = search_fn or BraveSearchBackend(allow, base_url=scfg.base_url)
+        cost = compute_call_cost(scfg.provider, "web_search", self._pricing)
+        self.registry.register(
+            WebSearchTool(
+                fn,
+                self._secrets,
+                scfg.api_key_secret,
+                allowlist=allow,
+                cost_usd=cost,
+                cost_provider=scfg.provider,
+                cost_model="web_search",
+            )
+        )
 
     def _wire_remote(self) -> None:
         from yett.tools.remote.hostprofile import HostProfile
@@ -307,6 +404,7 @@ class App:
             "load_skill": "nạp hướng dẫn skill", "delegate": "giao việc cho subagent",
             "task_add": "thêm việc/mục tiêu cần làm", "task_list": "xem việc cần làm",
             "task_update": "cập nhật/hoàn thành việc",
+            "memory_propose": "đề xuất ghi nhớ dài hạn vào staging (chờ duyệt mới vào MEMORY.md)",
             "notify": "đẩy thông báo cho người dùng qua Telegram",
         }
         lines = ["Bạn là yett — trợ lý DevOps cá nhân, fail-closed (mặc định từ chối, chặn trước khi chạy).",
@@ -338,6 +436,11 @@ class App:
             " Khi người dùng nói kiểu 'nhắc tôi…', 'ghi lại việc…', 'tôi cần làm…' → tạo task."
             " Khi được hỏi 'tôi đang làm gì / hôm nay có gì' → dùng task_list, ưu tiên việc"
             " quá hạn/đến hạn. Chủ động gợi ý bước tiếp và hỏi lại khi thiếu thông tin."
+        )
+        lines.append(
+            "\nBỘ NHỚ DÀI HẠN: sự kiện/ưu tiên đáng nhớ lâu → memory_propose (chỉ staging)."
+            " KHÔNG ghi thẳng MEMORY.md / memory/pending bằng write_file. Người dùng duyệt bằng"
+            " `yett memory list|approve|reject`."
         )
         lines.append("\nGiới hạn an toàn: KHÔNG xóa file OS trên server, KHÔNG ALTER/DELETE/UPDATE DB "
                      "trừ khi được duyệt tường minh. Khi bị chặn, giải thích và đề xuất cách an toàn.")

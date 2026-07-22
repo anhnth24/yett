@@ -33,6 +33,8 @@ def serialize_messages(messages: list[Message]) -> list[dict]:
         d: dict = {"role": m.role, "content": m.content}
         if m.tool_call_id is not None:
             d["tool_call_id"] = m.tool_call_id
+        if m.tool_result_is_error:
+            d["tool_result_is_error"] = True
         if m.tool_calls:
             d["tool_calls"] = [{"id": tc.id, "name": tc.name, "args": tc.args} for tc in m.tool_calls]
         out.append(d)
@@ -53,6 +55,7 @@ def deserialize_messages(data: list[dict]) -> list[Message]:
                 content=d["content"],
                 tool_call_id=d.get("tool_call_id"),
                 tool_calls=tool_calls,
+                tool_result_is_error=bool(d.get("tool_result_is_error", False)),
             )
         )
     return out

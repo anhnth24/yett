@@ -35,6 +35,17 @@ def test_build_config_no_secret_value_in_config() -> None:
     assert "SECRET-XYZ" not in yaml.safe_dump(cfg)
 
 
+def test_build_config_custom_provider_url_uses_custom_egress_host() -> None:
+    ans = Answers(
+        provider="anthropic",
+        model="claude-haiku-4-5",
+        base_url="https://llm.internal.example/v1",
+    )
+    cfg = build_config(ans)
+    assert cfg["provider"]["base_url"] == "https://llm.internal.example/v1"
+    assert cfg["egress"]["allowlist"] == ["llm.internal.example"]
+
+
 def test_find_provider() -> None:
     assert find_provider("glm").label.startswith("GLM")
     assert find_provider("khong-ton-tai") is None

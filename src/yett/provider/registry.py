@@ -21,6 +21,16 @@ OPENAI_COMPAT_BASE_URLS: dict[str, str] = {
     "groq": "https://api.groq.com/openai/v1",
 }
 
+# Native Anthropic Messages API (không phải OpenAI-compat). Path = {base}/messages.
+ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1"
+
+# Mọi provider có base_url mặc định (dùng cho wizard egress + factory).
+PROVIDER_BASE_URLS: dict[str, str] = {
+    **OPENAI_COMPAT_BASE_URLS,
+    "anthropic": ANTHROPIC_BASE_URL,
+}
+
 
 def default_base_url(name: str) -> str | None:
-    return OPENAI_COMPAT_BASE_URLS.get(name)
+    return PROVIDER_BASE_URLS.get(name)
+

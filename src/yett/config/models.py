@@ -16,7 +16,7 @@ class ProviderCfg(BaseModel):
     # Cách 2 (tiện, local): api_key = dán thẳng key vào đây. config/harness.yaml đã gitignored.
     api_key: str = ""
     base_url: str | None = None
-    max_retries: int = 4
+    max_retries: int = Field(default=4, ge=0)
 
 
 class BudgetCfg(BaseModel):
@@ -80,8 +80,11 @@ class DbProfileCfg(BaseModel):
 
 
 class SearchCfg(BaseModel):
+    """Cấu hình web_search. API key chỉ là TÊN secret — giá trị nằm ở secret store."""
+
     api_key_secret: str
-    # search backend cụ thể nối sau; hiện giữ tên key để không lộ giá trị
+    provider: Literal["brave"] = "brave"
+    base_url: str | None = None  # mặc định theo provider; override khi self-host/proxy
 
 
 class HostCfg(BaseModel):

@@ -33,6 +33,9 @@ class Message:
     # P0-2: lượt assistant khi model gọi tool — PHẢI có trong context TRƯỚC tool_result
     # tương ứng (đúng thứ tự OpenAI/Anthropic). None với mọi role khác / assistant text-only.
     tool_calls: list[ToolCall] | None = None
+    # Anthropic tool_result distinguishes execution failures from successful output.
+    # Other providers may ignore this provider-neutral signal.
+    tool_result_is_error: bool = False
 
 
 @dataclass(frozen=True)
@@ -49,6 +52,7 @@ class ChatResult:
     usage: Usage
     stop_reason: Literal["end_turn", "tool_use", "max_tokens", "refusal"]
     raw_model: str
+    provider_name: str = ""
 
 
 class FailReason(Enum):

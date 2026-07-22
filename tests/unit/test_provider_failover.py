@@ -34,7 +34,7 @@ class _FlakyProvider:
 @pytest.mark.asyncio
 async def test_retry_then_success() -> None:
     p = _FlakyProvider(FailReason.RATE_LIMIT, fail_times=2)
-    router = FailoverRouter(p, max_retries=5)
+    router = FailoverRouter(p, max_retries=2, backoff_base=0)
     res = await router.chat([], [])
     assert res.text == "ok"
     assert p.attempts == 3
@@ -47,6 +47,7 @@ async def test_hard_error_switches_to_fallback() -> None:
     router = FailoverRouter(primary, fallback, max_retries=3)
     res = await router.chat([], [])
     assert res.text == "from-fallback"
+    assert res.provider_name == "fake"
 
 
 @pytest.mark.asyncio
@@ -61,6 +62,33 @@ async def test_context_overflow_does_not_failover() -> None:
 @pytest.mark.asyncio
 async def test_retry_exhausted_without_fallback_raises() -> None:
     p = _FlakyProvider(FailReason.TIMEOUT, fail_times=99)
-    router = FailoverRouter(p, max_retries=2)
+    router = FailoverRouter(p, max_retries=2, backoff_base=0)
     with pytest.raises(ProviderError):
         await router.chat([], [])
+    assert p.attempts == 3
+
+
+async def test_retry_backoff_skips_sleep_after_final_failure() -> None:
+    p = _FlakyProvider(FailReason.OVERLOADED, fail_times=99)
+    delays: list[float] = []
+
+    async def record_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    router = FailoverRouter(p, max_retries=2, backoff_base=0.5, sleep=record_sleep)
+    with pytest.raises(ProviderError):
+        await router.chat([], [])
+    assert p.attempts == 3
+    assert delays == [0.5, 1.0]
+
+
+def test_retry_configuration_must_be_non_negative() -> None:
+    with pytest.raises(ValueError):
+        FailoverRouter(FakeProvider([]), max_retries=-1)
+
+
+async def test_zero_retries_still_makes_initial_attempt() -> None:
+    p = _FlakyProvider(FailReason.NETWORK, fail_times=99)
+    with pytest.raises(ProviderError):
+        await FailoverRouter(p, max_retries=0).chat([], [])
+    assert p.attempts == 1

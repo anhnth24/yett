@@ -33,9 +33,13 @@ class FailoverRouter:
         fallback: Provider | None = None,
         *,
         max_retries: int = 4,
-        backoff_base: float = 0.0,  # 0 trong test để không sleep thật
+        backoff_base: float = 1.0,
         sleep=asyncio.sleep,
     ) -> None:
+        if max_retries < 0:
+            raise ValueError("max_retries must be non-negative")
+        if backoff_base < 0:
+            raise ValueError("backoff_base must be non-negative")
         self._primary = primary
         self._fallback = fallback
         self._max_retries = max_retries
@@ -56,7 +60,9 @@ class FailoverRouter:
 
     async def _try(self, provider: Provider, messages, tools) -> ChatResult:
         last: Exception | None = None
-        for attempt in range(self._max_retries):
+        # max_retries means retries *after* the initial request.
+        attempts = self._max_retries + 1
+        for attempt in range(attempts):
             try:
                 return await provider.chat(messages, tools)
             except ProviderError as e:
@@ -65,7 +71,8 @@ class FailoverRouter:
                 last = e
                 if e.reason not in _RETRYABLE:
                     raise
-                if self._backoff_base:
+                # Do not delay after the final failed attempt before failover/raise.
+                if self._backoff_base and attempt + 1 < attempts:
                     await self._sleep(self._backoff_base * (2**attempt))
         assert last is not None
         raise last

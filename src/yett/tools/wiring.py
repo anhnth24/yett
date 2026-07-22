@@ -117,8 +117,12 @@ async def execute_tool(
                 if not reapproved:
                     return ToolResult.error("[DENIED] approval bị từ chối hoặc hết hạn")
 
-    tool = registry.get(name)
     try:
+        # Registry lookup is part of the agent-readable execution boundary.  A provider can
+        # still emit a stale/hallucinated tool name when configuration changed after a
+        # checkpoint, or when an allowlist rule exists for an optional tool that was not
+        # wired.  Do not let that abort the turn after Gate already allowed it.
+        tool = registry.get(name)
         tool.validate(args)
         raw = await tool.run(args, ctx)
     except UserFacingError as e:
@@ -137,7 +141,12 @@ async def execute_tool(
         # đã redact) CHƯA từng qua redact/injection-scan. Lọc LẠI trước khi trả về (context sẽ
         # checkpoint chuỗi này) thay vì trả thẳng `mutated_result` như trước.
         result = filter_apply(
-            ToolResult(ok=result.ok, content=mutated, is_error=result.is_error),
+            ToolResult(
+                ok=result.ok,
+                content=mutated,
+                is_error=result.is_error,
+                span_attrs=dict(result.span_attrs),
+            ),
             untrusted=name in _UNTRUSTED_TOOLS,
         )
     return result

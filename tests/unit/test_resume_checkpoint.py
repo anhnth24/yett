@@ -17,7 +17,7 @@ import json
 
 from yett.config.models import SecurityCfg, ToolRule
 from yett.core.cancel import CancelToken
-from yett.core.checkpoint import CheckpointStore
+from yett.core.checkpoint import CheckpointStore, deserialize_messages, serialize_messages
 from yett.core.context import assemble_context, tool_call_signature
 from yett.core.loop import AgentLoop, LoopConfig
 from yett.obs.spanstore import SpanStore
@@ -33,6 +33,19 @@ from yett.tools.registry import Registry
 def _clock():
     counter = itertools.count(1)
     return lambda: float(next(counter))
+
+
+def test_tool_error_flag_survives_checkpoint_round_trip() -> None:
+    messages = [
+        Message(
+            role="tool",
+            content="exit 1",
+            tool_call_id="toolu_1",
+            tool_result_is_error=True,
+        )
+    ]
+    restored = deserialize_messages(serialize_messages(messages))
+    assert restored == messages
 
 
 class _EchoTool:

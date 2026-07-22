@@ -4,7 +4,7 @@
 
 # ---- Provider ----
 # Chọn 1 provider. base_url có mặc định theo name (xem provider/registry.py), chỉ khai khi khác.
-# Provider hỗ trợ: glm, minimax, openai, anthropic_oai, gemini, deepseek, grok, qwen, mistral, groq.
+# Provider hỗ trợ: glm, minimax, openai, anthropic, anthropic_oai, gemini, deepseek, grok, qwen, mistral, groq.
 # Secret KHÔNG để trong file — đặt env YETT_SECRET_LLM_KEY. Giá xem config/pricing.yaml.
 
 # GLM 5.2 (Zhipu / Z.ai) — mặc định (endpoint quốc tế api.z.ai):
@@ -36,7 +36,8 @@ provider:
 #   deepseek      -> https://api.deepseek.com
 #   gemini        -> https://generativelanguage.googleapis.com/v1beta/openai
 #   openai        -> https://api.openai.com/v1
-#   anthropic_oai -> https://api.anthropic.com/v1
+#   anthropic     -> https://api.anthropic.com/v1   (Messages API native)
+#   anthropic_oai -> https://api.anthropic.com/v1   (OpenAI-compat)
 #   grok          -> https://api.x.ai/v1
 #   qwen          -> https://dashscope.aliyuncs.com/compatible-mode/v1
 #   mistral       -> https://api.mistral.ai/v1
@@ -47,7 +48,15 @@ provider:
 #   name: deepseek   model: deepseek-chat
 #   name: gemini     model: gemini-2.5-flash
 #   name: openai     model: gpt-5.4-mini
-#   name: anthropic_oai  model: claude-haiku-4-5
+#   name: anthropic      model: claude-haiku-4-5   # Messages API native (khuyến nghị)
+#   name: anthropic_oai  model: claude-haiku-4-5   # OpenAI-compat endpoint
+
+# Anthropic Messages API native (bỏ comment, comment GLM ở trên):
+# provider:
+#   name: anthropic
+#   model: claude-haiku-4-5
+#   api_key_secret: llm_key
+#   # base_url mặc định: https://api.anthropic.com/v1
 
 # Provider dự phòng (tuỳ chọn) — failover khi provider chính lỗi cứng:
 # fallback_provider:
@@ -121,6 +130,13 @@ sandbox:
   mem_limit: 2g
   cpus: 2.0
 
+# ---- web_search (Brave Search API; key trong secret store) ----
+# search:
+#   provider: brave
+#   api_key_secret: search_key   # export YETT_SECRET_SEARCH_KEY="BSA..."
+# Thêm api.search.brave.com vào egress.allowlist bên dưới. Kết quả URL ngoài allowlist bị lọc.
+# Nhớ thêm rule: { tool: web_search, effect: allow } ở security.allowlist.
+
 # ---- Egress allowlist (domain web_fetch/search được phép) ----
 egress:
   allowlist:
@@ -132,6 +148,7 @@ egress:
     - api.openai.com         # OpenAI
     - api.anthropic.com      # Anthropic
     - api.telegram.org       # Kênh Telegram (nếu bật channels.telegram)
+    # - api.search.brave.com # web_search (Brave) — bỏ comment nếu bật search ở trên
     # - github.com
 
 # ---- Security (Policy Gate) ----
@@ -160,6 +177,9 @@ security:
     - tool: task_list
       effect: allow
     - tool: task_update
+      effect: allow
+    # Memory review gate: agent chỉ đề xuất vào staging; duyệt bằng `yett memory approve`
+    - tool: memory_propose
       effect: allow
     - tool: notify                  # cho agent chủ động báo qua Telegram (deploy xong, CI đỏ…)
       effect: allow
