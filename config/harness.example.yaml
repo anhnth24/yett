@@ -111,19 +111,20 @@ projects:
 # Docs: https://docs.zaloplatforms.com/docs/BOT/apis/getUpdates (poll) /
 #       https://docs.zaloplatforms.com/docs/BOT/apis/setWebhook (webhook) /
 #       https://docs.zaloplatforms.com/docs/BOT/apis/sendMessage (text ≤2000).
-# Secret: export YETT_SECRET_ZALO_BOT_TOKEN="..."  hoặc secrets/zalo_bot_token (600).
+# Secrets: export YETT_SECRET_ZALO_BOT_TOKEN="...", YETT_SECRET_ZALO_PAIRING_CODE="...",
+# YETT_SECRET_ZALO_WEBHOOK_SECRET="..." (hoặc backend secret tương ứng).
 # Egress: thêm bot-api.zaloplatforms.com. mode=webhook fail-closed nếu thiếu HTTPS + secret 8–256.
 # channels:
 #   zalo:
 #     enabled: true
 #     token_secret: zalo_bot_token
-#     pairing_code: "yett-ghep-2026"
+#     pairing_code_secret: zalo_pairing_code
 #     allowed_chat_ids: []             # chat_id string (có thể hex-like, không chỉ số)
 #     mode: poll                       # poll | webhook (getUpdates ⊥ webhook theo docs Zalo)
 #     poll_timeout_sec: 30
 #     # mode: webhook
 #     # webhook_url: "https://example.com/api/channels/zalo/webhook"
-#     # webhook_secret: "change-me-8chars-min"
+#     # webhook_secret_secret: zalo_webhook_secret
 #     # webhook_path: /api/channels/zalo/webhook
 #     briefing_hour: 8
 

@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 import yaml
+from pydantic import ValidationError
 
 from yett.config.models import HarnessCfg
 
@@ -15,8 +16,9 @@ _KV_RE = re.compile(r"^(\s*)([A-Za-z0-9_.-]+):[ \t]*(.*?)\s*$")
 
 # Field inline chứa secret THẬT (che theo TÊN field, không dựa vào định dạng value — vì
 # redactor theo pattern chỉ bắt sk-…, bỏ sót key GLM `id.secret` là provider mặc định).
-# Chỉ che `api_key` (inline key); `api_key_secret`/`dsn_secret` là TÊN tham chiếu, không phải value.
-_SECRET_FIELDS = frozenset({"api_key"})
+# Reference fields such as api_key_secret/dsn_secret are names, not values. These fields
+# contain bearer credentials directly and must never be returned by GET /api/config.
+_SECRET_FIELDS = frozenset({"api_key", "pairing_code", "webhook_secret"})
 
 
 def _redact_secret_fields(text: str) -> str:
@@ -65,18 +67,22 @@ def _restore_redacted_secrets(original_text: str, submitted_text: str) -> str:
     """
     if _REDACT_MARKER not in submitted_text:
         return submitted_text
-    original_vals: dict[tuple[str, str], str] = {}
+    original_vals: dict[tuple[str, str], list[str]] = {}
     for line in original_text.splitlines():
         m = _KV_RE.match(line)
         if m and _REDACT_MARKER not in m.group(3):
-            original_vals.setdefault((m.group(1), m.group(2)), m.group(3))
+            original_vals.setdefault((m.group(1), m.group(2)), []).append(m.group(3))
     out: list[str] = []
+    submitted_occurrences: dict[tuple[str, str], int] = {}
     for line in submitted_text.splitlines():
         m = _KV_RE.match(line)
-        if m and _REDACT_MARKER in m.group(3):
-            orig = original_vals.get((m.group(1), m.group(2)))
-            if orig is not None:
-                out.append(f"{m.group(1)}{m.group(2)}: {orig}")
+        if m:
+            key = (m.group(1), m.group(2))
+            index = submitted_occurrences.get(key, 0)
+            submitted_occurrences[key] = index + 1
+            originals = original_vals.get(key, [])
+            if _REDACT_MARKER in m.group(3) and index < len(originals):
+                out.append(f"{m.group(1)}{m.group(2)}: {originals[index]}")
                 continue
         out.append(line)
     joined = "\n".join(out)
@@ -91,8 +97,16 @@ def validate_config_text(text: str) -> str | None:
         return f"YAML lỗi cú pháp: {e}"
     try:
         HarnessCfg.model_validate(raw)
-    except Exception as e:  # noqa: BLE001 — trả lỗi cho UI
-        return f"Config không hợp lệ: {e}"
+    except ValidationError as e:
+        # Pydantic's default string includes input_value, which may be a webhook/pairing
+        # secret. Return only field locations and validator messages.
+        details = "; ".join(
+            f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+            for error in e.errors(include_input=False)
+        )
+        return f"Config không hợp lệ: {details}"
+    except Exception as e:  # noqa: BLE001 — lỗi không-Pydantic, không kèm config input
+        return f"Config không hợp lệ: {type(e).__name__}"
     return None
 
 

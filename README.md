@@ -145,6 +145,8 @@ Use-case đầu tiên: trợ lý DevOps cá nhân chạy local — quản lý pr
 - **[v0.1] CLI/TUI** — kênh duy nhất của MVP.
 - **[v0.3] Telegram** — long-poll Bot API, wired `yett serve` (fake/offline verified).
 - **[v0.3] Zalo Official Bot API** — `channels.zalo` (poll mặc định hoặc webhook HTTPS + secret); gating/pairing như Telegram; **không** Zalo Personal. Docs tham chiếu: [getUpdates](https://docs.zaloplatforms.com/docs/BOT/apis/getUpdates), [setWebhook](https://docs.zaloplatforms.com/docs/BOT/apis/setWebhook), [sendMessage](https://docs.zaloplatforms.com/docs/BOT/apis/sendMessage). **Chủ đích không làm:** Zalo Personal (lib unofficial) và WeChat (plugin đóng, không portable).
+  - Kiểm chứng hiện tại là contract/integration **offline** theo tài liệu công khai; chưa gọi live API vì không có credential/test bot. Bảng `getUpdates` ghi `timeout` là String nhưng sample gửi number (adapter theo bảng/String). Tài liệu cũng chưa chốt semantics idempotency/retry của `sendMessage`, body 429/`Retry-After`, lịch retry webhook, retention replay, hay cách đếm emoji trong giới hạn 2000. Adapter vì vậy chỉ retry outbound khi nhận 429 tường minh, chunk bảo thủ theo UTF-16, và dedupe `(chat_id, message_id)` trong cửa sổ RAM của một process (không tuyên bố exactly-once qua restart).
+  - Pairing là bearer code chỉ cho chat `PRIVATE`, có rate limit và chỉ tồn tại tới khi process restart. Nên giữ bot token, pairing code và webhook secret trong secret backend qua các field `*_secret`; field inline chỉ để tương thích config cũ và luôn bị redact khỏi web config.
 
 ### Defer có chủ đích (chưa làm, có điều kiện mở lại)
 - Semantic memory / knowledge graph — chỉ khi FTS5 đo được là không đủ.

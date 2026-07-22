@@ -32,6 +32,39 @@ if TYPE_CHECKING:
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
 
 _MAX_BODY_BYTES = 2 * 1024 * 1024  # 2MB — đủ cho message chat + config text, chặn DoS bộ nhớ
+_MAX_HTTP_WORKERS = 32
+_CLIENT_SOCKET_TIMEOUT_SEC = 30.0
+
+
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """Bound request threads and slow-client lifetime for the externally reachable webhook."""
+
+    daemon_threads = True
+    request_queue_size = 64
+
+    def __init__(self, *args, max_workers: int = _MAX_HTTP_WORKERS, **kwargs) -> None:
+        self._worker_slots = threading.BoundedSemaphore(max_workers)
+        super().__init__(*args, **kwargs)
+
+    def get_request(self):
+        request, client_address = super().get_request()
+        request.settimeout(_CLIENT_SOCKET_TIMEOUT_SEC)
+        return request, client_address
+
+    def process_request(self, request, client_address) -> None:
+        # Backpressure happens in the accept loop; no unbounded Python thread/queue is created.
+        self._worker_slots.acquire()
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._worker_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._worker_slots.release()
 
 
 def make_handler(
@@ -94,27 +127,37 @@ def make_handler(
                     return False
             return True
 
-        def _read_body(self) -> bytes | None:
+        def _read_body(self, *, max_bytes: int = _MAX_BODY_BYTES) -> bytes | None:
             """Đọc body POST có cap kích thước; trả None + đã trả response lỗi nếu
             Content-Length thiếu hợp lệ hoặc vượt trần (không đọc hết body trong TH đó
             — tránh giữ request khổng lồ trong bộ nhớ)."""
+            if self.headers.get("Transfer-Encoding"):
+                self._json(400, {"error": "Transfer-Encoding không được hỗ trợ"})
+                return None
+            lengths = self.headers.get_all("Content-Length", [])
+            if len(lengths) > 1:
+                self._json(400, {"error": "Content-Length bị lặp"})
+                return None
             try:
-                length = int(self.headers.get("Content-Length", 0))
+                length = int(lengths[0]) if lengths else 0
             except ValueError:
                 self._json(400, {"error": "Content-Length không hợp lệ"})
                 return None
             if length < 0:
                 self._json(400, {"error": "Content-Length không hợp lệ"})
                 return None
-            if length > _MAX_BODY_BYTES:
-                # Đọc-rồi-bỏ theo chunk nhỏ (không giữ cả body khổng lồ trong bộ nhớ)
-                # thay vì đóng kết nối ngay — HTTP/1.0 không có cơ chế 100-continue nên
-                # đóng sớm giữa lúc client còn đang ghi sẽ làm client thấy reset kết nối
-                # thay vì đọc được response 413 sạch.
-                self._drain(length)
-                self._json(413, {"error": f"request quá lớn (> {_MAX_BODY_BYTES} byte)"})
+            if length > max_bytes:
+                # Drain only a bounded prefix. Draining an attacker-declared multi-GB body
+                # would tie up one worker despite bounded memory.
+                self._drain(min(length, max_bytes))
+                self.close_connection = True
+                self._json(413, {"error": f"request quá lớn (> {max_bytes} byte)"})
                 return None
-            return self.rfile.read(length)
+            body = self.rfile.read(length)
+            if len(body) != length:
+                self._json(400, {"error": "request body bị thiếu"})
+                return None
+            return body
 
         def _drain(self, total: int) -> None:
             remaining = total
@@ -125,7 +168,7 @@ def make_handler(
                     break
                 remaining -= len(chunk)
 
-        def _drain_declared_body(self) -> None:
+        def _drain_declared_body(self, *, max_bytes: int = _MAX_BODY_BYTES) -> None:
             """Drain body theo Content-Length trước khi trả lỗi sớm (vd Host/Origin
             không hợp lệ) — cap ở `_MAX_BODY_BYTES` (đủ cho client thật; Content-Length
             giả mạo khổng lồ thì không cần drain hết, client đó vốn không hợp lệ)."""
@@ -134,7 +177,9 @@ def make_handler(
             except ValueError:
                 return
             if length > 0:
-                self._drain(min(length, _MAX_BODY_BYTES))
+                self._drain(min(length, max_bytes))
+                if length > max_bytes:
+                    self.close_connection = True
 
         def do_GET(self) -> None:  # noqa: N802
             if not self._host_origin_ok():
@@ -200,10 +245,22 @@ def make_handler(
                 and req_path == zalo_wh.get("path")
                 and zalo_wh.get("channel") is not None
             ):
-                body = self._read_body()
+                channel = zalo_wh["channel"]
+                # Authenticate before allocating/parsing a body. The channel repeats this
+                # check to keep its direct-call contract fail closed.
+                if not channel.authorize_webhook(self.headers):
+                    self._drain_declared_body(max_bytes=channel.webhook_max_bytes)
+                    self._json(401, {"ok": False, "error": "unauthorized"})
+                    return
+                content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0]
+                if content_type.strip().lower() != "application/json":
+                    self._drain_declared_body(max_bytes=channel.webhook_max_bytes)
+                    self._json(415, {"ok": False, "error": "application/json required"})
+                    return
+                body = self._read_body(max_bytes=channel.webhook_max_bytes)
                 if body is None:
                     return
-                result = zalo_wh["channel"].handle_webhook(self.headers, body)
+                result = channel.handle_webhook(self.headers, body)
                 self._json(result.status, {"ok": result.ok, "error": result.error})
                 return
 
@@ -354,7 +411,7 @@ def serve(app: "App", *, host: str = "127.0.0.1", port: int = 8765, center=None,
     if center is not None:
         app.set_approver(center.request)
     lock = chat_lock or threading.Lock()
-    httpd = ThreadingHTTPServer(
+    httpd = BoundedThreadingHTTPServer(
         (host, port),
         make_handler(app, center, config_path, bind_host=host, chat_lock=lock, rebuild=rebuild),
     )
@@ -399,6 +456,12 @@ def _hot_swap(httpd, chat_lock, center, rebuild) -> None:
     with chat_lock:
         new_app = rebuild()
         old = getattr(httpd, "_app", None)
+        # Channel threads own credentials, pairing state, webhook routes, and polling mode.
+        # They are not rebuilt by an App swap. Refuse to claim channel config was hot-applied
+        # while old credentials remain live; the saved config takes effect after restart.
+        if old is not None and new_app.cfg.channels != old.cfg.channels:
+            new_app.close()
+            raise RuntimeError("thay đổi channels cần khởi động lại yett")
         httpd._app = new_app
         if center is not None:
             new_app.set_approver(center.request)
@@ -482,20 +545,44 @@ def _start_zalo(httpd, app, lock, stop) -> None:
         ZaloClient,
         validate_zalo_runtime_cfg,
     )
-    from yett.errors import YettError
-
+    try:
+        token = app._secrets.get(zl.token_secret)
+    except Exception as e:  # noqa: BLE001 — token chưa đặt → tắt Zalo, web vẫn chạy
+        print(f"[yett] Zalo bật nhưng chưa lấy được token ({zl.token_secret}): {e} — bỏ qua.",
+              file=sys.stderr)
+        return
+    pairing_code = zl.pairing_code
+    if zl.pairing_code_secret:
+        try:
+            pairing_code = app._secrets.get(zl.pairing_code_secret)
+        except Exception as e:  # noqa: BLE001
+            print(
+                f"[yett] Zalo không lấy được pairing code ({zl.pairing_code_secret}): "
+                f"{e} — tắt pairing.",
+                file=sys.stderr,
+            )
+            pairing_code = ""
+    webhook_secret = zl.webhook_secret
+    if zl.mode == "webhook" and zl.webhook_secret_secret:
+        try:
+            webhook_secret = app._secrets.get(zl.webhook_secret_secret)
+        except Exception as e:  # noqa: BLE001
+            print(
+                f"[yett] Zalo không lấy được webhook secret "
+                f"({zl.webhook_secret_secret}): {e} — bỏ qua.",
+                file=sys.stderr,
+            )
+            return
     cfg_err = validate_zalo_runtime_cfg(
-        enabled=zl.enabled, mode=zl.mode,
-        webhook_url=zl.webhook_url, webhook_secret=zl.webhook_secret,
+        enabled=zl.enabled,
+        mode=zl.mode,
+        webhook_url=zl.webhook_url,
+        webhook_secret=webhook_secret,
+        webhook_path=zl.webhook_path,
+        pairing_code=pairing_code,
     )
     if cfg_err:
         print(f"[yett] Zalo config fail-closed: {cfg_err} — bỏ qua.", file=sys.stderr)
-        return
-    try:
-        token = app._secrets.get(zl.token_secret)
-    except (YettError, Exception) as e:  # noqa: BLE001 — token chưa đặt → tắt Zalo, web vẫn chạy
-        print(f"[yett] Zalo bật nhưng chưa lấy được token ({zl.token_secret}): {e} — bỏ qua.",
-              file=sys.stderr)
         return
     gate = ChannelGate(allowed_chat_ids=set(zl.allowed_chat_ids))
     client = ZaloClient(
@@ -506,18 +593,18 @@ def _start_zalo(httpd, app, lock, stop) -> None:
     channel = ZaloChannel(
         client, gate,
         get_app=lambda: getattr(httpd, "_app", app), chat_lock=lock,
-        pairing_code=zl.pairing_code, poll_timeout=zl.poll_timeout_sec,
-        webhook_secret=zl.webhook_secret if zl.mode == "webhook" else "",
+        pairing_code=pairing_code, poll_timeout=zl.poll_timeout_sec,
+        webhook_secret=webhook_secret if zl.mode == "webhook" else "",
     )
     _compose_notifier(httpd, channel.notify)
     app.set_notifier(getattr(httpd, "_notifier", None))
     setattr(httpd, "_zalo_channel", channel)
 
     if zl.mode == "webhook":
-        path = zl.webhook_path if zl.webhook_path.startswith("/") else f"/{zl.webhook_path}"
+        path = zl.webhook_path
         setattr(httpd, "_zalo_webhook", {"path": path, "channel": channel})
         try:
-            client.set_webhook(zl.webhook_url, zl.webhook_secret)
+            client.set_webhook(zl.webhook_url, webhook_secret)
         except Exception as e:  # noqa: BLE001 — đăng ký webhook lỗi → không nhận inbound; web vẫn chạy
             print(f"[yett] Zalo setWebhook lỗi: {e} — webhook path vẫn lắng nghe local.",
                   file=sys.stderr)
@@ -525,10 +612,15 @@ def _start_zalo(httpd, app, lock, stop) -> None:
     else:
         try:
             client.delete_webhook()
-        except Exception:  # noqa: BLE001 — webhook cũ có thể không tồn tại
-            pass
-        threading.Thread(target=channel.run, args=(stop,), daemon=True).start()
-        print(f"[yett] Zalo: bật (poll). Chat đã ghép: {len(gate.allowed_chat_ids)}.")
+        except Exception as e:  # noqa: BLE001
+            # Official API says getUpdates cannot work while a webhook is configured.
+            print(
+                f"[yett] Zalo deleteWebhook lỗi: {e} — không khởi động poll.",
+                file=sys.stderr,
+            )
+        else:
+            threading.Thread(target=channel.run, args=(stop,), daemon=True).start()
+            print(f"[yett] Zalo: bật (poll). Chat đã ghép: {len(gate.allowed_chat_ids)}.")
 
     if zl.briefing_hour is not None:
         threading.Thread(
@@ -539,11 +631,8 @@ def _start_zalo(httpd, app, lock, stop) -> None:
 
     def _shutdown_zalo() -> None:
         channel.stop()
-        if zl.mode == "webhook":
-            try:
-                client.delete_webhook()
-            except Exception:  # noqa: BLE001
-                pass
+        # Keep webhook registration across normal restarts so Zalo can retry queued events.
+        # Poll mode removes it explicitly at startup.
 
     hooks: list = getattr(httpd, "_channel_shutdown_hooks", None) or []
     hooks.append(_shutdown_zalo)
@@ -622,4 +711,5 @@ def serve_forever(
             except Exception:  # noqa: BLE001
                 pass
         httpd.shutdown()
+        httpd.server_close()
         getattr(httpd, "_app", app).close()  # đóng App hiện tại (có thể đã hot-reload swap)
