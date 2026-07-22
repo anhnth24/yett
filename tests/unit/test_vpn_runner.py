@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import signal
 import stat
 import sys
 from pathlib import Path
@@ -679,6 +680,28 @@ def test_pid_identity_mismatch_prevents_signal(
     monkeypatch.setattr(vpn_module, "_process_identity", lambda pid: "reused")
     owned.terminate()
     assert fake.returncode is None
+
+
+def test_owned_process_group_signal_requires_matching_leader_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeProc()
+    owned = OwnedProcess(
+        pid=fake.pid,
+        argv0="openfortivpn",
+        _proc=fake,
+        _identity="original",
+        _owns_process_group=True,
+    )
+    sent: list[tuple[int, signal.Signals]] = []
+    monkeypatch.setattr(vpn_module, "_process_identity", lambda pid: "original")
+    monkeypatch.setattr(vpn_module.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(vpn_module.os, "killpg", lambda pid, sig: sent.append((pid, sig)))
+    owned.terminate_group()
+    assert sent == [(fake.pid, vpn_module._TERMINATE_SIGNAL)]
+    monkeypatch.setattr(vpn_module, "_process_identity", lambda pid: "reused")
+    owned.kill_group()
+    assert sent == [(fake.pid, vpn_module._TERMINATE_SIGNAL)]
 
 
 async def test_invalid_binary_path_is_rejected_before_spawn() -> None:
