@@ -33,6 +33,11 @@ from yett.tools.remote.vpn import (
 )
 from yett.tools.remote import vpn as vpn_module
 
+pytestmark = pytest.mark.skipif(
+    os.name != "posix",
+    reason="OpenVPN/openfortivpn subprocess runtime targets POSIX/WSL2; native Windows fails closed",
+)
+
 
 class _Ctx:
     session_key = "t"
