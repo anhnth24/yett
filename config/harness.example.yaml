@@ -144,6 +144,7 @@ sandbox:
 #   api_key_secret: image_key    # export YETT_SECRET_IMAGE_KEY="sk-..."
 #   # base_url: https://api.openai.com/v1   # mặc định; đổi nếu dùng proxy/self-host
 #   response_format: b64_json    # b64_json (khuyến nghị) | url (tải qua egress allowlist)
+#   timeout_sec: 60              # giới hạn toàn bộ một lần gọi/tải ảnh (1..300 giây)
 # Host API (api.openai.com) phải có trong egress.allowlist. Ảnh chỉ ghi trong workspace.
 # Nhớ thêm rule: { tool: image_gen, effect: allow } ở security.allowlist.
 
